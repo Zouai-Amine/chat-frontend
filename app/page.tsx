@@ -1,103 +1,537 @@
-import Image from "next/image";
+'use client';
+import React, { useEffect, useState, useRef, useCallback, memo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import Login from "../components/Login";
+import Chat from "../components/Chat";
 
-export default function Home() {
+// For floating reaction emojis
+type FloatingReaction = {
+  id: number;
+  emoji: string;
+  x: number; // horizontal position
+  y: number; // vertical position
+  angle: number; // angle in degrees for direction
+};
+
+interface User {
+  id: number;
+  username: string;
+}
+
+interface Message {
+  id: number;
+  sender: string;
+  text: string;
+  timestamp: string;
+  reactions: { [user_id: number]: string };
+}
+
+function App() {
+  const [username, setUsername] = useState("");
+  const [userId, setUserId] = useState<number | null>(null);
+  const [recipient, setRecipient] = useState<{ id: number; username: string } | null>(null);
+  const [message, setMessage] = useState("");
+  const [messages, setMessages] = useState<
+    {
+      id?: number;
+      sender: string;
+      text: string;
+      timestamp: Date;
+      reactions: { [user_id: number]: string };
+    }[]
+  >([]);
+  const [onlineUsers, setOnlineUsers] = useState<{ id: number; username: string }[]>([]);
+  const [unread, setUnread] = useState<Record<string, number>>({});
+  const [socket, setSocket] = useState<WebSocket | null>(null);
+  const [isTyping, setIsTyping] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [showSearch, setShowSearch] = useState(false);
+  const [darkMode, setDarkMode] = useState(false);
+  const [typingUsers, setTypingUsers] = useState<string[]>([]);
+  const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
+  const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reactionIdRef = useRef(0);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isReacting, setIsReacting] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(false);
+
+  // Load dark mode preference
+  useEffect(() => {
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme) {
+      setDarkMode(savedTheme === 'dark');
+    } else {
+      const systemPrefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setDarkMode(systemPrefersDark);
+    }
+  }, []);
+
+  // Apply dark mode class and save preference
+  useEffect(() => {
+    const root = document.documentElement;
+    if (darkMode) {
+      root.classList.add('dark');
+    } else {
+      root.classList.remove('dark');
+    }
+    localStorage.setItem('theme', darkMode ? 'dark' : 'light');
+  }, [darkMode]);
+
+  // Scroll to bottom
+  useEffect(() => {
+    if (!isLoadingMore && !isReacting && !isInitialLoad) {
+      requestAnimationFrame(() => {
+        const scrollableDiv = document.getElementById('scrollableDiv') as HTMLElement;
+        if (scrollableDiv) {
+          scrollableDiv.scrollTop = scrollableDiv.scrollHeight;
+        }
+      });
+    }
+  }, [messages, isLoadingMore, isReacting, isInitialLoad]);
+
+  // Auto-remove floating reactions after animation
+  useEffect(() => {
+    if (floatingReactions.length === 0) return;
+    const timer = setTimeout(() => {
+      setFloatingReactions((prev) => prev.slice(1));
+    }, 2000);
+    return () => clearTimeout(timer);
+  }, [floatingReactions]);
+
+  // --- Connect WebSocket ---
+  const connect = async () => {
+    if (!username.trim()) return alert("Please enter a username first.");
+
+    try {
+      const res = await fetch("http://localhost:8000/users/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+
+      if (!res.ok) throw new Error("Failed to create/fetch user");
+      const user = await res.json();
+      setUserId(user.id);
+
+      const ws = new WebSocket(`ws://localhost:8000/ws/${user.id}`);
+
+      ws.onopen = () => { };
+      ws.onclose = () => {
+        setSocket(null);
+        setTimeout(connect, 2000);
+      };
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+
+        if (data.type === "users") {
+          setOnlineUsers(data.users.filter((u: User) => u.id !== user.id));
+        } else if (data.type === "message") {
+          const msg = {
+            id: data.id,
+            sender: data.sender,
+            text: data.text,
+            timestamp: new Date(data.timestamp || Date.now()),
+            reactions: data.reactions || {}, // Initialize with existing reactions or empty object
+          };
+          setMessages((prev) => [...prev, msg]);
+
+          if (data.sender !== user.username && data.sender !== recipient?.username) {
+            setUnread((prev) => ({
+              ...prev,
+              [data.sender]: (prev[data.sender] || 0) + 1,
+            }));
+          }
+        } else if (data.type === "typing") {
+          if (data.is_typing) {
+            setTypingUsers((prev) => [...new Set([...prev, data.sender])]);
+          } else {
+            setTypingUsers((prev) => prev.filter((u) => u !== data.sender));
+          }
+        } else if (data.type === "reaction") {
+          // Normalize reaction to string
+          let normalizedReaction = '';
+          if (Array.isArray(data.reaction)) {
+            normalizedReaction = data.reaction[0] || '';
+          } else if (typeof data.reaction === 'object' && data.reaction) {
+            normalizedReaction = data.reaction.reaction || '';
+          } else if (typeof data.reaction === 'string') {
+            normalizedReaction = data.reaction;
+          }
+
+          // Prevent auto-scroll during reaction update
+          setIsReacting(true);
+
+          // Only trigger floating animation if reaction is being added (not removed)
+          if (normalizedReaction) {
+            const msgElement = document.querySelector(`[data-message-id="${data.message_id}"]`);
+            if (msgElement) {
+              const rect = msgElement.getBoundingClientRect();
+              const chatArea = document.querySelector('.flex-1.overflow-y-auto') as HTMLElement;
+              if (chatArea) {
+                const centerX = rect.left + rect.width / 2 - chatArea.getBoundingClientRect().left;
+                const centerY = rect.top + rect.height / 2 - chatArea.getBoundingClientRect().top;
+                const newReactions: FloatingReaction[] = [];
+                for (let i = 0; i < 3; i++) {
+                  const angle = Math.random() * 360;
+                  newReactions.push({
+                    id: reactionIdRef.current++,
+                    emoji: normalizedReaction,
+                    x: centerX,
+                    y: centerY,
+                    angle
+                  });
+                }
+                setFloatingReactions((prev) => [...prev, ...newReactions]);
+              }
+            }
+          }
+
+          // Update message reactions
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.id === data.message_id) {
+                const newReactions = { ...msg.reactions };
+                if (normalizedReaction) {
+                  // Add or update reaction
+                  newReactions[data.user_id] = normalizedReaction;
+                } else {
+                  // Remove reaction if empty string
+                  delete newReactions[data.user_id];
+                }
+                return {
+                  ...msg,
+                  reactions: newReactions,
+                };
+              }
+              return msg;
+            })
+          );
+
+          // Allow scrolling again after update
+          setTimeout(() => setIsReacting(false), 0);
+        }
+      };
+
+      setSocket(ws);
+    } catch (err) {
+      console.error("Error connecting:", err);
+    }
+  };
+
+
+  // Handle typing
+  const handleTyping = useCallback(() => {
+    if (!socket || !recipient || !userId) return;
+
+    if (!isTyping) {
+      setIsTyping(true);
+      socket.send(
+        JSON.stringify({
+          type: "typing",
+          sender_id: userId,
+          recipient_id: recipient.id,
+          is_typing: true,
+        })
+      );
+    }
+
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+
+    typingTimeoutRef.current = setTimeout(() => {
+      setIsTyping(false);
+      if (socket && recipient && userId) {
+        socket.send(
+          JSON.stringify({
+            type: "typing",
+            sender_id: userId,
+            recipient_id: recipient.id,
+            is_typing: false,
+          })
+        );
+      }
+    }, 1000);
+  }, [socket, recipient, userId, isTyping]);
+
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    };
+  }, []);
+
+  // Load more messages for infinite scroll
+  const loadMoreMessages = useCallback(async () => {
+    console.log("Loading more messages...");
+    if (!recipient || !userId || isLoadingMore || !hasMoreMessages) return;
+
+    setIsLoadingMore(true);
+    const scrollableDiv = document.getElementById('scrollableDiv') as HTMLElement | null;
+    if (!scrollableDiv) return; // Guard against missing element
+
+    const oldScrollHeight = scrollableDiv.scrollHeight;
+    const oldScrollTop = scrollableDiv.scrollTop;
+
+    const olderMessages = await fetchMessages(userId, recipient.id, 20, messages.length);
+    if (olderMessages.length < 20) {
+      setHasMoreMessages(false);
+    }
+    setMessages(prev => [...olderMessages, ...prev]);
+
+    // Maintain scroll position after prepending (use requestAnimationFrame for better timing after DOM update)
+    requestAnimationFrame(() => {
+      const newScrollHeight = scrollableDiv.scrollHeight;
+      const heightDiff = newScrollHeight - oldScrollHeight;
+      scrollableDiv.scrollTop = oldScrollTop + heightDiff;
+    });
+
+    setIsLoadingMore(false);
+  }, [recipient, userId, isLoadingMore, hasMoreMessages, messages.length]);
+
+  // Send message
+  const sendMessage = useCallback(async () => {
+    if (!socket || !recipient || !message.trim() || !userId) return;
+
+    const newMessage = {
+      sender: username,
+      text: message,
+      timestamp: new Date(),
+      reactions: {},
+    };
+    setMessages((prev) => [...prev, newMessage]);
+    setMessage("");
+
+    socket.send(
+      JSON.stringify({
+        type: "message",
+        sender_id: userId,
+        recipient_id: recipient.id,
+        text: message,
+      })
+    );
+  }, [socket, recipient, message, userId, username]);
+
+  // Fetch messages
+  const fetchMessages = async (senderId: number, recipientId: number, limit?: number, offset?: number) => {
+    try {
+      let url = `http://localhost:8000/messages/${senderId}/${recipientId}`;
+      if (limit !== undefined && offset !== undefined) {
+        url += `?limit=${limit}&offset=${offset}`;
+      }
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        const formatted = data.map((msg: Message) => {
+          // Normalize reactions object
+          const normalizedReactions: { [key: number]: string } = {};
+          if (msg.reactions && typeof msg.reactions === 'object') {
+            Object.entries(msg.reactions).forEach(([userId, reaction]) => {
+              let normalizedReaction = '';
+              if (typeof reaction === 'string') {
+                normalizedReaction = reaction;
+              } else if (typeof reaction === 'object' && reaction) {
+                normalizedReaction = (reaction as any).reaction || '';
+              }
+              if (normalizedReaction) {
+                normalizedReactions[parseInt(userId)] = normalizedReaction;
+              }
+            });
+          }
+
+          return {
+            id: msg.id,
+            sender: msg.sender,
+            text: msg.text,
+            timestamp: new Date(msg.timestamp),
+            reactions: normalizedReactions,
+          };
+        });
+        return formatted;
+      }
+    } catch (err) {
+      console.error("Error fetching messages:", err);
+    }
+    return [];
+  };
+
+  useEffect(() => {
+    if (recipient && userId) {
+      setUnread((prev) => {
+        const updated = { ...prev };
+        delete updated[recipient.username];
+        return updated;
+      });
+      // Load initial messages
+      const loadInitial = async () => {
+        setIsInitialLoad(true);
+        const initialMessages = await fetchMessages(userId, recipient.id, 20, 0);
+        setMessages(initialMessages.reverse()); // Reverse to have newest at bottom
+        setHasMoreMessages(initialMessages.length === 20);
+        setTimeout(() => setIsInitialLoad(false), 0);
+      };
+      loadInitial();
+    }
+  }, [recipient, userId]);
+
+  // Send reaction + trigger local floating effect
+  const sendReaction = useCallback((messageId: number, reaction: string) => {
+    if (!socket || !userId) return;
+
+    const msg = messages.find(m => m.id === messageId);
+    if (!msg) return;
+
+    const currentReaction = msg.reactions[userId];
+    const newReaction = currentReaction === reaction ? '' : reaction;
+
+    // Prevent auto-scroll during reaction update
+    setIsReacting(true);
+
+    // Update local messages immediately for instant feedback
+    setMessages(prev => prev.map(m => {
+      if (m.id === messageId) {
+        const updatedReactions = { ...m.reactions };
+        if (newReaction) {
+          updatedReactions[userId] = newReaction;
+        } else {
+          delete updatedReactions[userId];
+        }
+        return { ...m, reactions: updatedReactions };
+      }
+      return m;
+    }));
+
+    // Allow scrolling again after update
+    setTimeout(() => setIsReacting(false), 0);
+
+    // Trigger local floating animation only if adding a reaction
+    if (newReaction) {
+      const msgElement = document.querySelector(`[data-message-id="${messageId}"]`);
+      if (msgElement) {
+        const rect = msgElement.getBoundingClientRect();
+        const chatArea = document.querySelector('.flex-1.overflow-y-auto') as HTMLElement;
+        if (chatArea) {
+          const centerX = rect.left + rect.width / 2 - chatArea.getBoundingClientRect().left;
+          const centerY = rect.top + rect.height / 2 - chatArea.getBoundingClientRect().top;
+          const newReactions: FloatingReaction[] = [];
+          for (let i = 0; i < 3; i++) {
+            const angle = Math.random() * 360;
+            newReactions.push({
+              id: reactionIdRef.current++,
+              emoji: newReaction,
+              x: centerX,
+              y: centerY,
+              angle
+            });
+          }
+          setFloatingReactions((prev) => [...prev, ...newReactions]);
+        }
+      }
+    }
+
+    // Send to server
+    socket.send(
+      JSON.stringify({
+        type: "reaction",
+        message_id: messageId,
+        user_id: userId,
+        reaction: newReaction,
+      })
+    );
+  }, [socket, userId, messages]);
+
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="flex flex-col md:flex-row h-screen text-slate-900 dark:text-white transition-all duration-500
+    bg-gradient-to-br
+    from-cyan-50 via-blue-50 to-pink-50
+    dark:from-slate-900 dark:via-purple-900 dark:to-pink-900
+    relative overflow-hidden">
+      {/* Animated background particles */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute top-1/4 left-1/4 w-2 h-2 bg-cyan-400 rounded-full animate-pulse opacity-20"></div>
+        <div className="absolute top-3/4 right-1/4 w-1 h-1 bg-pink-400 rounded-full animate-bounce opacity-30" style={{ animationDelay: '1s' }}></div>
+        <div className="absolute top-1/2 left-1/2 w-3 h-3 bg-blue-400 rounded-full animate-ping opacity-10" style={{ animationDelay: '2s' }}></div>
+      </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+      {/* Floating Reactions Overlay */}
+      <div className="fixed inset-0 pointer-events-none z-50">
+        <AnimatePresence>
+          {floatingReactions.map((fr) => {
+            const distance = 150;
+            const radian = (fr.angle * Math.PI) / 180;
+            const endX = Math.cos(radian) * distance;
+            const endY = Math.sin(radian) * distance;
+            const randomRotate = Math.random() * 60 - 30;
+            return (
+              <motion.div
+                key={fr.id}
+                className="absolute text-5xl font-bold select-none drop-shadow-2xl filter"
+                style={{
+                  left: fr.x,
+                  top: fr.y,
+                  filter: 'drop-shadow(0 0 10px rgba(34, 211, 238, 0.5)) drop-shadow(0 0 20px rgba(168, 85, 247, 0.3))'
+                }}
+                initial={{ scale: 0, x: 0, y: 0, opacity: 0, rotate: 0 }}
+                animate={{
+                  scale: [0, 2, 1.5],
+                  x: [0, endX * 0.5, endX],
+                  y: [0, endY * 0.5, endY],
+                  opacity: [0, 1, 0.9, 0],
+                  rotate: [0, randomRotate, randomRotate * 1.5]
+                }}
+                exit={{ scale: 0, opacity: 0 }}
+                transition={{
+                  duration: 2.5,
+                  times: [0, 0.15, 0.4, 1],
+                  ease: [0.25, 0.46, 0.45, 0.94]
+                }}
+              >
+                {fr.emoji}
+              </motion.div>
+            );
+          })}
+        </AnimatePresence>
+      </div>
+
+      <AnimatePresence>
+        {!socket ? (
+          <Login username={username} setUsername={setUsername} connect={connect} />
+        ) : (
+          <Chat
+            recipient={recipient}
+            setRecipient={setRecipient}
+            message={message}
+            setMessage={setMessage}
+            messages={messages}
+            onlineUsers={onlineUsers}
+            unread={unread}
+            searchQuery={searchQuery}
+            setSearchQuery={setSearchQuery}
+            showSearch={showSearch}
+            setShowSearch={setShowSearch}
+            darkMode={darkMode}
+            setDarkMode={setDarkMode}
+            typingUsers={typingUsers}
+            isTyping={isTyping}
+            floatingReactions={floatingReactions}
+            showReactionPicker={showReactionPicker}
+            setShowReactionPicker={setShowReactionPicker}
+            scrollRef={scrollRef}
+            sendMessage={sendMessage}
+            sendReaction={sendReaction}
+            handleTyping={handleTyping}
+            username={username}
+            userId={userId}
+            socket={socket}
+            hasMoreMessages={hasMoreMessages}
+            loadMoreMessages={loadMoreMessages}
+            isLoadingMore={isLoadingMore}
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
+
+export default App;
