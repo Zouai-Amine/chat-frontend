@@ -1,5 +1,6 @@
 'use client';
-import React, { useMemo, memo, useRef, useEffect } from 'react';
+
+import React, { useMemo, memo, useEffect, Dispatch, SetStateAction } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     Send,
@@ -14,13 +15,12 @@ import {
     Image,
 } from 'lucide-react';
 
-// For floating reaction emojis
 type FloatingReaction = {
     id: number;
     emoji: string;
-    x: number; // horizontal position
-    y: number; // vertical position
-    angle: number; // angle in degrees for direction
+    x: number;
+    y: number;
+    angle: number;
 };
 
 interface Message {
@@ -37,6 +37,7 @@ interface ChatProps {
     message: string;
     setMessage: (message: string) => void;
     messages: Message[];
+    setMessages: Dispatch<SetStateAction<Message[]>>;
     onlineUsers: { id: number; username: string }[];
     unread: Record<string, number>;
     searchQuery: string;
@@ -60,7 +61,6 @@ interface ChatProps {
     hasMoreMessages: boolean;
     loadMoreMessages: () => void;
     isLoadingMore: boolean;
-    // Removed showLoaderAtTop as it's handled by InfiniteScroll
 }
 
 function Chat({
@@ -69,6 +69,7 @@ function Chat({
     message,
     setMessage,
     messages,
+    setMessages,
     onlineUsers,
     unread,
     searchQuery,
@@ -93,8 +94,7 @@ function Chat({
     loadMoreMessages,
     isLoadingMore,
 }: ChatProps) {
-
-    // Group messages
+    // Group messages (same as your original logic)
     const groupedMessages = useMemo(() => {
         const groups: Array<{
             sender: string;
@@ -118,7 +118,14 @@ function Chat({
             if (!shouldGroup) {
                 groups.push({
                     sender: msg.sender,
-                    messages: [{ id: msg.id, text: msg.text, timestamp: msg.timestamp, reactions: msg.reactions || {} }],
+                    messages: [
+                        {
+                            id: msg.id,
+                            text: msg.text,
+                            timestamp: msg.timestamp,
+                            reactions: msg.reactions || {},
+                        },
+                    ],
                     isOwn,
                 });
             } else {
@@ -126,7 +133,7 @@ function Chat({
                     id: msg.id,
                     text: msg.text,
                     timestamp: msg.timestamp,
-                    reactions: msg.reactions,
+                    reactions: msg.reactions || {},
                 });
             }
         });
@@ -134,7 +141,7 @@ function Chat({
         return groups;
     }, [messages, username]);
 
-    // Optimize filteredMessages with useMemo
+    // Filter messages by search query
     const filteredMessages = useMemo(() => {
         if (!searchQuery) return groupedMessages;
         return groupedMessages
@@ -146,6 +153,86 @@ function Chat({
             }))
             .filter((group) => group.messages.length > 0);
     }, [groupedMessages, searchQuery]);
+
+    const getUsernameFromId = (userIdNum: number) => {
+        if (userIdNum === userId) return username;
+        const user = onlineUsers.find((u) => u.id === userIdNum);
+        return user ? user.username : `User ${userIdNum}`;
+    };
+
+    // Listen for WebSocket “new_reaction” (and optionally “new_message”) events
+    useEffect(() => {
+        if (!socket) return;
+
+        const handler = (event: MessageEvent) => {
+            let data: any;
+            try {
+                data = JSON.parse(event.data);
+            } catch (err) {
+                // Not JSON or irrelevant message
+                return;
+            }
+
+            if (data.type === 'new_reaction') {
+                const { message_id, user_id, reaction } = data;
+                setMessages((prev) =>
+                    prev.map((msg) => {
+                        if (msg.id === message_id) {
+                            return {
+                                ...msg,
+                                reactions: {
+                                    ...msg.reactions,
+                                    [user_id]: reaction,
+                                },
+                            };
+                        }
+                        return msg;
+                    })
+                );
+            }
+
+            // Optionally, if your server sends new messages:
+            if (data.type === 'new_message') {
+                const newMsg = {
+                    id: data.id,
+                    sender: data.sender,
+                    text: data.text,
+                    timestamp: new Date(data.timestamp),
+                    reactions: data.reactions || {},
+                };
+                setMessages((prev) => [...prev, newMsg]);
+            }
+        };
+
+        socket.addEventListener('message', handler);
+
+        return () => {
+            socket.removeEventListener('message', handler);
+        };
+    }, [socket, setMessages]);
+
+    // Handler that wraps sendReaction and also does optimistic update
+    const handleReaction = (messageId: number, emoji: string) => {
+        // Optimistically update UI
+        if (userId != null) {
+            setMessages((prev) =>
+                prev.map((msg) =>
+                    msg.id === messageId
+                        ? {
+                            ...msg,
+                            reactions: {
+                                ...msg.reactions,
+                                [userId]: emoji,
+                            },
+                        }
+                        : msg
+                )
+            );
+        }
+
+        // Send to server
+        sendReaction(messageId, emoji);
+    };
 
     return (
         <>
@@ -194,7 +281,9 @@ function Chat({
                                             <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-gradient-to-r from-green-400 to-emerald-500 border-3 border-white dark:border-slate-800 rounded-full animate-pulse shadow-md"></div>
                                         </div>
                                         <span
-                                            className={`font-semibold text-base ${recipient?.id === u.id ? 'text-cyan-400' : 'text-slate-700 dark:text-slate-300'
+                                            className={`font-semibold text-base ${recipient?.id === u.id
+                                                ? 'text-cyan-400'
+                                                : 'text-slate-700 dark:text-slate-300'
                                                 }`}
                                         >
                                             {u.username}
@@ -235,7 +324,9 @@ function Chat({
                             <MessageCircle className="w-6 h-6 text-cyan-400 animate-pulse" />
                             Chatting with:{' '}
                             <span
-                                className={`font-semibold ${recipient ? 'text-cyan-400 bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent' : 'text-slate-500 dark:text-slate-400'
+                                className={`font-semibold ${recipient
+                                    ? 'text-cyan-400 bg-gradient-to-r from-cyan-400 to-blue-500 bg-clip-text text-transparent'
+                                    : 'text-slate-500 dark:text-slate-400'
                                     }`}
                             >
                                 {recipient ? recipient.username : 'Select a user'}
@@ -273,7 +364,12 @@ function Chat({
                     </div>
                     <AnimatePresence>
                         {showSearch && (
-                            <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} className="mt-4">
+                            <motion.div
+                                initial={{ height: 0, opacity: 0 }}
+                                animate={{ height: 'auto', opacity: 1 }}
+                                exit={{ height: 0, opacity: 0 }}
+                                className="mt-4"
+                            >
                                 <input
                                     value={searchQuery}
                                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -287,7 +383,7 @@ function Chat({
 
                 {/* Messages */}
                 <div
-                    className="flex-1 overflow-y-auto bg-gradient-to-b from-white/30 to-cyan-50/30 dark:from-slate-900/30 dark:to-purple-900/30 relative backdrop-blur-sm" style={{ minHeight: '600px', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}
+                    className="flex-1 overflow-y-auto bg-gradient-to-b from-white/30 to-cyan-50/30 dark:from-slate-900/30 dark:to-purple-900/30 relative backdrop-blur-sm p-4 space-y-4"
                     id="scrollableDiv"
                 >
                     {hasMoreMessages && (
@@ -296,7 +392,7 @@ function Chat({
                             disabled={isLoadingMore}
                             initial={{ opacity: 0, y: -10 }}
                             animate={{ opacity: 1, y: 0 }}
-                            className="self-center px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
+                            className="w-full px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-500 text-white rounded-full shadow-lg hover:shadow-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {isLoadingMore ? 'Loading older messages...' : 'Load older messages'}
                         </motion.button>
@@ -310,64 +406,55 @@ function Chat({
                                 transition={{ duration: 0.3, delay: groupIdx * 0.05 }}
                                 className={`flex ${group.isOwn ? 'justify-end' : 'justify-start'}`}
                             >
-                                <div className={`max-w-[75%] space-y-1 ${group.isOwn ? 'items-end' : 'items-start'}`}>
-                                    <div className={`flex items-center gap-2 mb-2 ${group.isOwn ? 'justify-end' : 'justify-start'}`}>
-                                        {!group.isOwn && (
-                                            <div className="w-8 h-8 bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-lg ring-2 ring-white/50 dark:ring-slate-700/50 animate-pulse">
-                                                {group.sender.charAt(0).toUpperCase()}
-                                            </div>
-                                        )}
-                                        <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">{group.sender}</span>
-                                        {group.isOwn && (
-                                            <div className="w-8 h-8 bg-gradient-to-br from-pink-400 via-rose-500 to-red-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-lg ring-2 ring-white/50 dark:ring-slate-700/50 animate-pulse">
-                                                {username.charAt(0).toUpperCase()}
-                                            </div>
-                                        )}
+                                <div
+                                    className={`max-w-[75%] space-y-2 flex flex-col ${group.isOwn ? 'items-end' : 'items-start'
+                                        }`}
+                                >
+                                    <div
+                                        className={`flex items-center gap-2 ${group.isOwn ? 'flex-row-reverse' : 'flex-row'
+                                            }`}
+                                    >
+                                        <div
+                                            className={`w-8 h-8 bg-gradient-to-br ${group.isOwn
+                                                ? 'from-pink-400 via-rose-500 to-red-500'
+                                                : 'from-cyan-400 via-blue-500 to-purple-500'
+                                                } rounded-full flex items-center justify-center text-white font-bold text-xs shadow-lg ring-2 ring-white/50 dark:ring-slate-700/50`}
+                                        >
+                                            {group.sender.charAt(0).toUpperCase()}
+                                        </div>
+                                        <span className="text-sm font-semibold text-slate-700 dark:text-slate-300">
+                                            {group.sender}
+                                        </span>
                                     </div>
 
-                                    <div className={`space-y-1 ${group.isOwn ? 'items-end' : 'items-start'}`}>
-                                        {group.messages.map((msg, msgIdx) => (
-                                            <motion.div
-                                                key={`msg-${groupIdx}-${msgIdx}`}
-                                                data-message-id={msg.id}
-                                                initial={{ scale: 0.8, opacity: 0 }}
-                                                animate={{ scale: 1, opacity: 1 }}
-                                                transition={{ delay: groupIdx * 0.05 + msgIdx * 0.1 }}
-                                                className={`relative group flex items-start ${group.isOwn ? 'justify-end' : 'justify-start'} ${msg.reactions[userId!] ? 'mb-4' : ''
-                                                    }`}
-                                            >
+                                    {group.messages.map((msg, msgIdx) => (
+                                        <motion.div
+                                            key={`msg-${groupIdx}-${msgIdx}`}
+                                            data-message-id={msg.id}
+                                            initial={{ scale: 0.8, opacity: 0 }}
+                                            animate={{ scale: 1, opacity: 1 }}
+                                            transition={{
+                                                delay: groupIdx * 0.05 + msgIdx * 0.05,
+                                            }}
+                                            className="relative group w-full"
+                                        >
+                                            <div className={`flex items-start gap-2 ${group.isOwn ? 'justify-end' : 'justify-start'}`}>
                                                 <div
-                                                    className={`px-4 py-3 rounded-3xl shadow-2xl max-w-md break-words transition-all duration-300 hover:shadow-3xl ring-1 ${group.isOwn
+                                                    className={`px-4 py-3 rounded-3xl shadow-lg max-w-full break-words transition-all duration-300 hover:shadow-xl ring-1 ${group.isOwn
                                                         ? 'bg-gradient-to-r from-cyan-500 via-blue-500 to-purple-500 text-white rounded-br-lg ring-cyan-400/30'
                                                         : 'bg-white/90 dark:bg-slate-700/90 text-slate-900 dark:text-slate-100 rounded-bl-lg ring-white/20 dark:ring-slate-600/30 backdrop-blur-sm'
                                                         }`}
-                                                    title={msg.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                                                    title={msg.timestamp.toLocaleTimeString([], {
+                                                        hour: '2-digit',
+                                                        minute: '2-digit',
+                                                    })}
                                                 >
-                                                    <p className="text-xs leading-relaxed">{msg.text}</p>
+                                                    <p className="text-sm leading-relaxed">{msg.text}</p>
                                                 </div>
 
-                                                {/* All Reactions - shown below message */}
-                                                {Object.keys(msg.reactions || {}).length > 0 && (
-                                                    <motion.div
-                                                        initial={{ scale: 0 }}
-                                                        animate={{ scale: 1 }}
-                                                        className={`flex gap-1 mt-2 ${group.isOwn ? 'justify-end' : 'justify-start'}`}
-                                                    >
-                                                        {Object.entries(msg.reactions).map(([userId, reaction]) => (
-                                                            <div
-                                                                key={userId}
-                                                                className="text-lg bg-white/80 dark:bg-slate-600/80 rounded-full px-2 py-1 shadow-sm ring-1 ring-white/30 dark:ring-slate-500/30 backdrop-blur-sm hover:scale-110 transition-transform cursor-pointer"
-                                                                title={`Reacted by user ${userId}`}
-                                                            >
-                                                                {reaction}
-                                                            </div>
-                                                        ))}
-                                                    </motion.div>
-                                                )}
-
-                                                {/* Reaction Picker - Only for other users' messages */}
+                                                {/* Reaction Picker */}
                                                 {msg.id && !group.isOwn && (
-                                                    <div className="relative ml-2">
+                                                    <div className="relative">
                                                         <AnimatePresence>
                                                             {showReactionPicker === msg.id && (
                                                                 <motion.div
@@ -386,7 +473,7 @@ function Chat({
                                                                             whileHover={{ scale: 1.3, y: -6, rotate: 10 }}
                                                                             whileTap={{ scale: 0.9 }}
                                                                             onClick={() => {
-                                                                                sendReaction(msg.id!, emoji);
+                                                                                handleReaction(msg.id!, emoji);
                                                                                 setShowReactionPicker(null);
                                                                             }}
                                                                             className="text-2xl p-2 rounded-xl hover:bg-gradient-to-br hover:from-cyan-100/80 hover:to-blue-100/80 dark:hover:from-cyan-900/50 dark:hover:to-blue-900/50 transition-all duration-200 backdrop-blur-sm"
@@ -401,31 +488,70 @@ function Chat({
                                                         <motion.button
                                                             whileHover={{ scale: 1.1, rotate: 5 }}
                                                             whileTap={{ scale: 0.95 }}
-                                                            onClick={() => setShowReactionPicker(showReactionPicker === msg.id ? null : msg.id!)}
-                                                            className="p-2 rounded-full bg-gradient-to-br from-cyan-100/80 to-blue-100/80 dark:from-cyan-900/40 dark:to-blue-900/40 hover:from-cyan-200/90 hover:to-blue-200/90 dark:hover:from-cyan-800/60 dark:hover:to-blue-800/60 transition-all duration-300 flex items-center gap-1 text-slate-600 dark:text-slate-300 backdrop-blur-sm ring-1 ring-cyan-400/30 hover:ring-cyan-400/60 shadow-md hover:shadow-lg group"
+                                                            onClick={() =>
+                                                                setShowReactionPicker(
+                                                                    showReactionPicker === msg.id ? null : msg.id!
+                                                                )
+                                                            }
+                                                            className="p-2 rounded-full bg-gradient-to-br from-cyan-100/80 to-blue-100/80 dark:from-cyan-900/40 dark:to-blue-900/40 hover:from-cyan-200/90 hover:to-blue-200/90 dark:hover:from-cyan-800/60 dark:hover:to-blue-800/60 transition-all duration-300 backdrop-blur-sm ring-1 ring-cyan-400/30 hover:ring-cyan-400/60 shadow-md hover:shadow-lg"
                                                         >
-                                                            <Smile className="w-4 h-4 group-hover:scale-110 transition-transform" />
+                                                            <Smile className="w-4 h-4" />
                                                         </motion.button>
                                                     </div>
                                                 )}
-                                            </motion.div>
-                                        ))}
-                                    </div>
+                                            </div>
+
+                                            {/* All Reactions */}
+                                            {msg.reactions && Object.keys(msg.reactions).length > 0 && (
+                                                <motion.div
+                                                    initial={{ scale: 0 }}
+                                                    animate={{ scale: 1 }}
+                                                    className={`flex flex-wrap gap-1 mt-1 ${group.isOwn ? 'justify-end' : 'justify-start'
+                                                        }`}
+                                                >
+                                                    {Object.entries(msg.reactions).map(
+                                                        ([userIdStr, reaction]) => {
+                                                            const userIdNum = parseInt(userIdStr);
+                                                            const reactorName = getUsernameFromId(userIdNum);
+                                                            return (
+                                                                <div
+                                                                    key={userIdStr}
+                                                                    className="text-base bg-white/80 dark:bg-slate-600/80 rounded-full px-2 py-1 shadow-sm ring-1 ring-white/30 dark:ring-slate-500/30 backdrop-blur-sm hover:scale-110 transition-transform cursor-pointer"
+                                                                    title={`${reactorName}`}
+                                                                >
+                                                                    {reaction}
+                                                                </div>
+                                                            );
+                                                        }
+                                                    )}
+                                                </motion.div>
+                                            )}
+                                        </motion.div>
+                                    ))}
                                 </div>
                             </motion.div>
                         ))}
                     </AnimatePresence>
+
                     {/* Typing indicator */}
                     {typingUsers.filter((u) => u === recipient?.username).length > 0 && (
-                        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="flex justify-start">
-                            <div className="bg-white/90 dark:bg-slate-700/90 px-3 py-2 rounded-2xl rounded-bl-lg max-w-[75%] transition-all duration-300 backdrop-blur-sm shadow-md ring-1 ring-white/20 dark:ring-slate-600/30">
+                        <motion.div
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            className="flex justify-start"
+                        >
+                            <div className="bg-white/90 dark:bg-slate-700/90 px-4 py-3 rounded-2xl rounded-bl-lg transition-all duration-300 backdrop-blur-sm shadow-md ring-1 ring-white/20 dark:ring-slate-600/30">
                                 <div className="flex items-center gap-2">
-                                    <div className="w-6 h-6 bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-md ring-1 ring-white/50 dark:ring-slate-700/50 animate-pulse">
-                                        {typingUsers.filter((u) => u === recipient?.username)[0].charAt(0).toUpperCase()}
+                                    <div className="w-6 h-6 bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-md ring-1 ring-white/50 dark:ring-slate-700/50">
+                                        {typingUsers
+                                            .filter((u) => u === recipient?.username)[0]
+                                            .charAt(0)
+                                            .toUpperCase()}
                                     </div>
                                     <div className="flex flex-col">
                                         <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                                            {typingUsers.filter((u) => u === recipient?.username)[0]} is typing...
+                                            {typingUsers.filter((u) => u === recipient?.username)[0]} is typing
                                         </span>
                                         <div className="flex space-x-1 mt-1">
                                             <div className="w-2 h-2 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full animate-bounce shadow-sm"></div>
@@ -454,7 +580,7 @@ function Chat({
                     className="p-4 bg-white/70 dark:bg-slate-800/70 backdrop-blur-xl border-t border-white/20 dark:border-slate-600/50 shadow-lg"
                 >
                     <div className="flex gap-3 items-end">
-                        <div className="flex gap-3 mb-3">
+                        <div className="flex gap-2">
                             <motion.button
                                 whileHover={{ scale: 1.1, boxShadow: '0 0 15px rgba(34, 211, 238, 0.3)' }}
                                 whileTap={{ scale: 0.9 }}

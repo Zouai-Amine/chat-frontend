@@ -1,16 +1,17 @@
 'use client';
-import React, { useEffect, useState, useRef, useCallback, memo } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Login from "../components/Login";
 import Chat from "../components/Chat";
+import Signup from "@/components/Signup";
 
 // For floating reaction emojis
 type FloatingReaction = {
   id: number;
   emoji: string;
-  x: number; // horizontal position
-  y: number; // vertical position
-  angle: number; // angle in degrees for direction
+  x: number;
+  y: number;
+  angle: number;
 };
 
 interface User {
@@ -23,7 +24,7 @@ interface Message {
   sender: string;
   text: string;
   timestamp: string;
-  reactions: { [user_id: number]: string };
+  reactions: { [user_id: string]: string };
 }
 
 function App() {
@@ -57,6 +58,8 @@ function App() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isReacting, setIsReacting] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(false);
+  const [showSignup, setShowSignup] = useState(false);
+  const [loggedIn, setLoggedIn] = useState(false);
 
   // Load dark mode preference
   useEffect(() => {
@@ -103,124 +106,183 @@ function App() {
 
   // --- Connect WebSocket ---
   const connect = async () => {
-    if (!username.trim()) return alert("Please enter a username first.");
+    if (!username.trim()) return alert("Please login first.");
 
     try {
-      const res = await fetch("http://localhost:8000/users/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username }),
+      // First, get the user by username to get the ID
+      const userRes = await fetch(`http://localhost:8000/users?username=${username}`, {
+        method: "GET",
       });
 
-      if (!res.ok) throw new Error("Failed to create/fetch user");
-      const user = await res.json();
-      setUserId(user.id);
-
-      const ws = new WebSocket(`ws://localhost:8000/ws/${user.id}`);
-
-      ws.onopen = () => { };
-      ws.onclose = () => {
-        setSocket(null);
-        setTimeout(connect, 2000);
-      };
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-
-        if (data.type === "users") {
-          setOnlineUsers(data.users.filter((u: User) => u.id !== user.id));
-        } else if (data.type === "message") {
-          const msg = {
-            id: data.id,
-            sender: data.sender,
-            text: data.text,
-            timestamp: new Date(data.timestamp || Date.now()),
-            reactions: data.reactions || {}, // Initialize with existing reactions or empty object
-          };
-          setMessages((prev) => [...prev, msg]);
-
-          if (data.sender !== user.username && data.sender !== recipient?.username) {
-            setUnread((prev) => ({
-              ...prev,
-              [data.sender]: (prev[data.sender] || 0) + 1,
-            }));
-          }
-        } else if (data.type === "typing") {
-          if (data.is_typing) {
-            setTypingUsers((prev) => [...new Set([...prev, data.sender])]);
-          } else {
-            setTypingUsers((prev) => prev.filter((u) => u !== data.sender));
-          }
-        } else if (data.type === "reaction") {
-          // Normalize reaction to string
-          let normalizedReaction = '';
-          if (Array.isArray(data.reaction)) {
-            normalizedReaction = data.reaction[0] || '';
-          } else if (typeof data.reaction === 'object' && data.reaction) {
-            normalizedReaction = data.reaction.reaction || '';
-          } else if (typeof data.reaction === 'string') {
-            normalizedReaction = data.reaction;
-          }
-
-          // Prevent auto-scroll during reaction update
-          setIsReacting(true);
-
-          // Only trigger floating animation if reaction is being added (not removed)
-          if (normalizedReaction) {
-            const msgElement = document.querySelector(`[data-message-id="${data.message_id}"]`);
-            if (msgElement) {
-              const rect = msgElement.getBoundingClientRect();
-              const chatArea = document.querySelector('.flex-1.overflow-y-auto') as HTMLElement;
-              if (chatArea) {
-                const centerX = rect.left + rect.width / 2 - chatArea.getBoundingClientRect().left;
-                const centerY = rect.top + rect.height / 2 - chatArea.getBoundingClientRect().top;
-                const newReactions: FloatingReaction[] = [];
-                for (let i = 0; i < 3; i++) {
-                  const angle = Math.random() * 360;
-                  newReactions.push({
-                    id: reactionIdRef.current++,
-                    emoji: normalizedReaction,
-                    x: centerX,
-                    y: centerY,
-                    angle
-                  });
-                }
-                setFloatingReactions((prev) => [...prev, ...newReactions]);
-              }
-            }
-          }
-
-          // Update message reactions
-          setMessages((prev) =>
-            prev.map((msg) => {
-              if (msg.id === data.message_id) {
-                const newReactions = { ...msg.reactions };
-                if (normalizedReaction) {
-                  // Add or update reaction
-                  newReactions[data.user_id] = normalizedReaction;
-                } else {
-                  // Remove reaction if empty string
-                  delete newReactions[data.user_id];
-                }
-                return {
-                  ...msg,
-                  reactions: newReactions,
-                };
-              }
-              return msg;
-            })
-          );
-
-          // Allow scrolling again after update
-          setTimeout(() => setIsReacting(false), 0);
-        }
-      };
-
-      setSocket(ws);
+      if (!userRes.ok) {
+        // If user doesn't exist, create it
+        const createRes = await fetch("http://localhost:8000/users/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username }),
+        });
+        if (!createRes.ok) throw new Error("Failed to create user");
+        const user = await createRes.json();
+        setUserId(user.id);
+        connectWebSocket(user.id);
+      } else {
+        const user = await userRes.json();
+        setUserId(user.id);
+        connectWebSocket(user.id);
+      }
     } catch (err) {
       console.error("Error connecting:", err);
     }
   };
 
+  const connectWebSocket = (userIdParam: number) => {
+    const ws = new WebSocket(`ws://localhost:8000/ws/${userIdParam}`);
+
+    ws.onopen = () => {
+      console.log("WebSocket connected");
+    };
+
+    ws.onclose = () => {
+      console.log("WebSocket disconnected");
+      setSocket(null);
+      setTimeout(() => connectWebSocket(userIdParam), 2000);
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+
+      if (data.type === "users") {
+        setOnlineUsers(data.users.filter((u: User) => u.id !== userIdParam));
+      } else if (data.type === "message") {
+        const msg = {
+          id: data.id,
+          sender: data.sender,
+          text: data.text,
+          timestamp: new Date(data.timestamp || Date.now()),
+          reactions: data.reactions || {},
+        };
+        setMessages((prev) => [...prev, msg]);
+
+        if (data.sender !== username && data.sender !== recipient?.username) {
+          setUnread((prev) => ({
+            ...prev,
+            [data.sender]: (prev[data.sender] || 0) + 1,
+          }));
+        }
+      } else if (data.type === "typing") {
+        if (data.is_typing) {
+          setTypingUsers((prev) => [...new Set([...prev, data.sender])]);
+        } else {
+          setTypingUsers((prev) => prev.filter((u) => u !== data.sender));
+        }
+      } else if (data.type === "reaction") {
+        // Normalize reaction to string
+        let normalizedReaction = '';
+        if (Array.isArray(data.reaction)) {
+          normalizedReaction = data.reaction[0] || '';
+        } else if (typeof data.reaction === 'object' && data.reaction) {
+          normalizedReaction = data.reaction.reaction || '';
+        } else if (typeof data.reaction === 'string') {
+          normalizedReaction = data.reaction;
+        }
+
+        // Prevent auto-scroll during reaction update
+        setIsReacting(true);
+
+        // Only trigger floating animation if reaction is being added (not removed)
+        if (normalizedReaction) {
+          const msgElement = document.querySelector(`[data-message-id="${data.message_id}"]`);
+          if (msgElement) {
+            const rect = msgElement.getBoundingClientRect();
+            const chatArea = document.querySelector('.flex-1.overflow-y-auto') as HTMLElement;
+            if (chatArea) {
+              const centerX = rect.left + rect.width / 2 - chatArea.getBoundingClientRect().left;
+              const centerY = rect.top + rect.height / 2 - chatArea.getBoundingClientRect().top;
+              const newReactions: FloatingReaction[] = [];
+              for (let i = 0; i < 3; i++) {
+                const angle = Math.random() * 360;
+                newReactions.push({
+                  id: reactionIdRef.current++,
+                  emoji: normalizedReaction,
+                  x: centerX,
+                  y: centerY,
+                  angle
+                });
+              }
+              setFloatingReactions((prev) => [...prev, ...newReactions]);
+            }
+          }
+        }
+
+        // Update message reactions
+        setMessages((prev) =>
+          prev.map((msg) => {
+            if (msg.id === data.message_id) {
+              const newReactions = { ...msg.reactions };
+              if (normalizedReaction) {
+                newReactions[data.user_id] = normalizedReaction;
+              } else {
+                delete newReactions[data.user_id];
+              }
+              return {
+                ...msg,
+                reactions: newReactions,
+              };
+            }
+            return msg;
+          })
+        );
+
+        setTimeout(() => setIsReacting(false), 0);
+      }
+    };
+
+    setSocket(ws);
+  };
+
+  // Connect to websocket when logged in
+  useEffect(() => {
+    if (loggedIn && username) {
+      connect();
+    }
+  }, [loggedIn, username]);
+
+  const handleSignup = async (email: string, username: string, password: string) => {
+    try {
+      const response = await fetch("http://127.0.0.1:8000/signup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, username, password }),
+      });
+
+      if (!response.ok) throw new Error("Signup failed");
+
+      alert("Signup successful! Please log in.");
+      setShowSignup(false);
+    } catch (err) {
+      alert("Signup failed!");
+    }
+  };
+
+  const handleLogin = async (username: string, password: string) => {
+    try {
+      const response = await fetch("http://127.0.0.1:8000/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (!response.ok) throw new Error("Invalid credentials");
+
+      const data = await response.json();
+      localStorage.setItem("token", data.access_token);
+      setUsername(username);
+      setLoggedIn(true);
+      alert("Login successful!");
+    } catch (err) {
+      alert("Login failed!");
+    }
+  };
 
   // Handle typing
   const handleTyping = useCallback(() => {
@@ -268,7 +330,7 @@ function App() {
 
     setIsLoadingMore(true);
     const scrollableDiv = document.getElementById('scrollableDiv') as HTMLElement | null;
-    if (!scrollableDiv) return; // Guard against missing element
+    if (!scrollableDiv) return;
 
     const oldScrollHeight = scrollableDiv.scrollHeight;
     const oldScrollTop = scrollableDiv.scrollTop;
@@ -279,7 +341,6 @@ function App() {
     }
     setMessages(prev => [...olderMessages, ...prev]);
 
-    // Maintain scroll position after prepending (use requestAnimationFrame for better timing after DOM update)
     requestAnimationFrame(() => {
       const newScrollHeight = scrollableDiv.scrollHeight;
       const heightDiff = newScrollHeight - oldScrollHeight;
@@ -323,7 +384,6 @@ function App() {
       if (res.ok) {
         const data = await res.json();
         const formatted = data.map((msg: Message) => {
-          // Normalize reactions object
           const normalizedReactions: { [key: number]: string } = {};
           if (msg.reactions && typeof msg.reactions === 'object') {
             Object.entries(msg.reactions).forEach(([userId, reaction]) => {
@@ -362,11 +422,10 @@ function App() {
         delete updated[recipient.username];
         return updated;
       });
-      // Load initial messages
       const loadInitial = async () => {
         setIsInitialLoad(true);
         const initialMessages = await fetchMessages(userId, recipient.id, 20, 0);
-        setMessages(initialMessages.reverse()); // Reverse to have newest at bottom
+        setMessages(initialMessages.reverse());
         setHasMoreMessages(initialMessages.length === 20);
         setTimeout(() => setIsInitialLoad(false), 0);
       };
@@ -384,10 +443,8 @@ function App() {
     const currentReaction = msg.reactions[userId];
     const newReaction = currentReaction === reaction ? '' : reaction;
 
-    // Prevent auto-scroll during reaction update
     setIsReacting(true);
 
-    // Update local messages immediately for instant feedback
     setMessages(prev => prev.map(m => {
       if (m.id === messageId) {
         const updatedReactions = { ...m.reactions };
@@ -401,10 +458,8 @@ function App() {
       return m;
     }));
 
-    // Allow scrolling again after update
     setTimeout(() => setIsReacting(false), 0);
 
-    // Trigger local floating animation only if adding a reaction
     if (newReaction) {
       const msgElement = document.querySelector(`[data-message-id="${messageId}"]`);
       if (msgElement) {
@@ -429,7 +484,6 @@ function App() {
       }
     }
 
-    // Send to server
     socket.send(
       JSON.stringify({
         type: "reaction",
@@ -439,7 +493,6 @@ function App() {
       })
     );
   }, [socket, userId, messages]);
-
 
   return (
     <div className="flex flex-col md:flex-row h-screen text-slate-900 dark:text-white transition-all duration-500
@@ -495,8 +548,18 @@ function App() {
       </div>
 
       <AnimatePresence>
-        {!socket ? (
-          <Login username={username} setUsername={setUsername} connect={connect} />
+        {!loggedIn ? (
+          showSignup ? (
+            <Signup
+              onSignup={handleSignup}
+              onLoginClick={() => setShowSignup(false)}
+            />
+          ) : (
+            <Login
+              onLogin={handleLogin}
+              onSignupClick={() => setShowSignup(true)}
+            />
+          )
         ) : (
           <Chat
             recipient={recipient}
@@ -504,6 +567,7 @@ function App() {
             message={message}
             setMessage={setMessage}
             messages={messages}
+            setMessages={setMessages}
             onlineUsers={onlineUsers}
             unread={unread}
             searchQuery={searchQuery}
