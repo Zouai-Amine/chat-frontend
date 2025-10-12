@@ -1,8 +1,9 @@
 'use client';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { motion } from 'framer-motion';
+import { Suspense } from 'react';
 
-export default function VerifyResultPage() {
+function VerifyResultPageContent() {
     const params = useSearchParams();
     const router = useRouter();
     const status = params.get('status');
@@ -105,5 +106,13 @@ export default function VerifyResultPage() {
                 </motion.div>
             </div>
         </div>
+    );
+}
+
+export default function VerifyResultPage() {
+    return (
+        <Suspense fallback={<div>Loading...</div>}>
+            <VerifyResultPageContent />
+        </Suspense>
     );
 }

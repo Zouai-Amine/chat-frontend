@@ -390,8 +390,11 @@ function App() {
               let normalizedReaction = '';
               if (typeof reaction === 'string') {
                 normalizedReaction = reaction;
-              } else if (typeof reaction === 'object' && reaction) {
-                normalizedReaction = (reaction as any).reaction || '';
+              } else if (typeof reaction === 'object' && reaction !== null && 'reaction' in reaction) {
+                const reactionObj = reaction as { reaction?: string };
+                if (typeof reactionObj.reaction === 'string') {
+                  normalizedReaction = reactionObj.reaction;
+                }
               }
               if (normalizedReaction) {
                 normalizedReactions[parseInt(userId)] = normalizedReaction;

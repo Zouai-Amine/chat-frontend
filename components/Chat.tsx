@@ -79,8 +79,6 @@ function Chat({
     darkMode,
     setDarkMode,
     typingUsers,
-    isTyping,
-    floatingReactions,
     showReactionPicker,
     setShowReactionPicker,
     scrollRef,
@@ -165,15 +163,15 @@ function Chat({
         if (!socket) return;
 
         const handler = (event: MessageEvent) => {
-            let data: any;
+            let data: Record<string, unknown>;
             try {
-                data = JSON.parse(event.data);
-            } catch (err) {
+                data = JSON.parse(event.data) as Record<string, unknown>;
+            } catch {
                 // Not JSON or irrelevant message
                 return;
             }
 
-            if (data.type === 'new_reaction') {
+            if (data.type === 'new_reaction' && typeof data.message_id === 'number' && typeof data.user_id === 'number' && typeof data.reaction === 'string') {
                 const { message_id, user_id, reaction } = data;
                 setMessages((prev) =>
                     prev.map((msg) => {
@@ -192,13 +190,14 @@ function Chat({
             }
 
             // Optionally, if your server sends new messages:
-            if (data.type === 'new_message') {
-                const newMsg = {
-                    id: data.id,
-                    sender: data.sender,
-                    text: data.text,
-                    timestamp: new Date(data.timestamp),
-                    reactions: data.reactions || {},
+            if (data.type === 'new_message' && typeof data.id === 'number' && typeof data.sender === 'string' && typeof data.text === 'string' && typeof data.timestamp === 'string') {
+                const { id, sender, text, timestamp, reactions } = data;
+                const newMsg: Message = {
+                    id,
+                    sender,
+                    text,
+                    timestamp: new Date(timestamp),
+                    reactions: (reactions as Record<number, string>) || {},
                 };
                 setMessages((prev) => [...prev, newMsg]);
             }
