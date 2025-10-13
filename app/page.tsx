@@ -7,7 +7,7 @@ import Signup from "@/components/Signup";
 import { firebaseLogin, firebaseSignup, firebaseLogout, onAuthStateChange } from "../lib/auth";
 import { LogOut } from "lucide-react";
 import { db } from "../lib/firebase";
-import { collection, addDoc, query, orderBy, onSnapshot, where, limit, getDocs } from "firebase/firestore";
+import { collection, addDoc, query, orderBy, onSnapshot, where, limit, getDocs, doc, updateDoc } from "firebase/firestore";
 import { User } from "firebase/auth";
 
 // For floating reaction emojis
@@ -41,9 +41,11 @@ function App() {
     {
       id?: string;
       sender: string;
+      senderId: string;
       text: string;
       timestamp: Date;
       reactions: { [user_id: string]: string };
+      isOwn: boolean;
     }[]
   >([]);
   const [onlineUsers, setOnlineUsers] = useState<{ id: string; email: string }[]>([]);
@@ -111,24 +113,117 @@ function App() {
   useEffect(() => {
     const unsubscribe = onAuthStateChange((user) => {
       setCurrentUser(user);
+      if (user) {
+        // Update online users when user logs in
+        updateOnlineUsers();
+      } else {
+        // Clear online users when user logs out
+        setOnlineUsers([]);
+      }
     });
     return unsubscribe;
   }, []);
 
-  const handleSignup = async (email: string, username: string, password: string) => {
+  // Function to update online users list
+  const updateOnlineUsers = async () => {
     try {
-      await firebaseSignup(email, password, username);
-      setShowSignup(false);
-    } catch (err) {
-      console.error("Signup error:", err);
+      const usersRef = collection(db, 'users');
+      const querySnapshot = await getDocs(usersRef);
+      const users: { id: string; email: string }[] = [];
+
+      querySnapshot.forEach((doc) => {
+        const userData = doc.data();
+        // For now, show all users (in a real app, you'd track online status)
+        if (doc.id !== currentUser?.uid) {
+          users.push({
+            id: doc.id,
+            email: userData.username || userData.email, // Show username if available
+          });
+        }
+      });
+
+      setOnlineUsers(users);
+    } catch (error) {
+      console.error('Error fetching online users:', error);
     }
   };
 
-  const handleLogin = async (email: string, password: string) => {
+  // Update online users when current user changes
+  useEffect(() => {
+    if (currentUser) {
+      updateOnlineUsers();
+    }
+  }, [currentUser]);
+
+  // Real-time listener for users collection
+  useEffect(() => {
+    if (!currentUser) return;
+
+    const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
+      const users: { id: string; email: string }[] = [];
+      snapshot.forEach((doc) => {
+        const userData = doc.data();
+        if (doc.id !== currentUser.uid) {
+          users.push({
+            id: doc.id,
+            email: userData.username || userData.email,
+          });
+        }
+      });
+      setOnlineUsers(users);
+    });
+
+    return unsubscribe;
+  }, [currentUser]);
+
+  const handleSignup = async (email: string, username: string, password: string) => {
     try {
+      // Check if username is already taken
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('username', '==', username));
+      const querySnapshot = await getDocs(q);
+
+      if (!querySnapshot.empty) {
+        alert("Username already taken!");
+        return;
+      }
+
+      await firebaseSignup(email, password, username);
+      alert("Signup successful! Please log in.");
+      setShowSignup(false);
+    } catch (err) {
+      console.error("Signup error:", err);
+      alert("Signup failed! Please check the console for details.");
+    }
+  };
+
+  const handleLogin = async (username: string, password: string) => {
+    try {
+      // For Firebase, we need to find the user by username first
+      // This is a limitation - Firebase Auth requires email for login
+      // We'll need to store a mapping or use a different approach
+
+      // For now, let's assume users login with email but we can change the UI
+      // Actually, let's implement a proper username-based login
+
+      // We'll need to query Firestore to find the email associated with the username
+      const usersRef = collection(db, 'users');
+      const q = query(usersRef, where('username', '==', username));
+      const querySnapshot = await getDocs(q);
+
+      if (querySnapshot.empty) {
+        alert("Username not found!");
+        return;
+      }
+
+      const userDoc = querySnapshot.docs[0];
+      const userData = userDoc.data();
+      const email = userData.email;
+
       await firebaseLogin(email, password);
     } catch (err) {
-      console.error("Login failed!");
+      console.error("Login failed:", err);
+      alert("Login failed!");
     }
   };
 
@@ -178,10 +273,12 @@ function App() {
     if (!currentUser || !recipient || !message.trim()) return;
 
     const newMessage = {
-      sender: currentUser.email!,
+      sender: currentUser.displayName || currentUser.email!.split('@')[0],
+      senderId: currentUser.uid,
       text: message,
       timestamp: new Date(),
       reactions: {},
+      isOwn: true,
     };
     setMessages((prev) => [...prev, newMessage]);
     setMessage("");
@@ -245,8 +342,43 @@ function App() {
     }
   }, [recipient, currentUser]);
 
+  // Real-time listener for messages
+  useEffect(() => {
+    if (!recipient || !currentUser) return;
+
+    // Listen to all messages and filter client-side
+    const unsubscribe = onSnapshot(collection(db, 'messages'), (snapshot) => {
+      const conversationMessages: any[] = [];
+
+      snapshot.forEach((doc) => {
+        const data = doc.data();
+        // Filter messages for this conversation
+        if (
+          (data.senderId === currentUser.uid && data.recipientId === recipient.id) ||
+          (data.senderId === recipient.id && data.recipientId === currentUser.uid)
+        ) {
+          conversationMessages.push({
+            id: doc.id,
+            sender: data.senderId === currentUser.uid ? currentUser.displayName || currentUser.email!.split('@')[0] : recipient.email.split('@')[0],
+            senderId: data.senderId,
+            text: data.text,
+            timestamp: data.timestamp.toDate(),
+            reactions: data.reactions || {},
+            isOwn: data.senderId === currentUser.uid,
+          });
+        }
+      });
+
+      // Sort by timestamp (oldest first)
+      conversationMessages.sort((a, b) => a.timestamp - b.timestamp);
+      setMessages(conversationMessages);
+    });
+
+    return unsubscribe;
+  }, [recipient, currentUser]);
+
   // Send reaction + trigger local floating effect
-  const sendReaction = useCallback((messageId: string, reaction: string) => {
+  const sendReaction = useCallback(async (messageId: string, reaction: string) => {
     if (!currentUser) return;
 
     const msg = messages.find(m => m.id === messageId);
@@ -257,6 +389,7 @@ function App() {
 
     setIsReacting(true);
 
+    // Optimistic UI update
     setMessages(prev => prev.map(m => {
       if (m.id === messageId) {
         const updatedReactions = { ...m.reactions };
@@ -297,7 +430,34 @@ function App() {
     }
 
     // Update reaction in Firestore
-    // Note: This would need to be implemented with Firestore update operations
+    try {
+      const messageRef = doc(db, 'messages', messageId);
+      const updatedReactions = { ...msg.reactions };
+      if (newReaction) {
+        updatedReactions[currentUser.uid] = newReaction;
+      } else {
+        delete updatedReactions[currentUser.uid];
+      }
+
+      await updateDoc(messageRef, {
+        reactions: updatedReactions
+      });
+    } catch (error) {
+      console.error('Error updating reaction:', error);
+      // Revert optimistic update on error
+      setMessages(prev => prev.map(m => {
+        if (m.id === messageId) {
+          const revertedReactions = { ...m.reactions };
+          if (currentReaction) {
+            revertedReactions[currentUser.uid] = currentReaction;
+          } else {
+            delete revertedReactions[currentUser.uid];
+          }
+          return { ...m, reactions: revertedReactions };
+        }
+        return m;
+      }));
+    }
   }, [currentUser, messages]);
 
   return (

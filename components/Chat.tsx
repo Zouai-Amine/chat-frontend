@@ -25,11 +25,13 @@ type FloatingReaction = {
 };
 
 interface Message {
-    id?: string;
-    sender: string;
-    text: string;
-    timestamp: Date;
-    reactions: { [user_id: string]: string };
+  id?: string;
+  sender: string;
+  senderId: string;
+  text: string;
+  timestamp: Date;
+  reactions: { [user_id: string]: string };
+  isOwn: boolean;
 }
 
 interface ChatProps {
@@ -95,7 +97,7 @@ function Chat({
     isLoadingMore,
     onLogout,
 }: ChatProps) {
-    // Group messages (same as your original logic)
+    // Group messages with proper ownership detection
     const groupedMessages = useMemo(() => {
         const groups: Array<{
             sender: string;
@@ -109,7 +111,7 @@ function Chat({
         }> = [];
 
         messages.forEach((msg, index) => {
-            const isOwn = msg.sender === username;
+            const isOwn = msg.isOwn;
             const prevMsg = messages[index - 1];
             const shouldGroup =
                 prevMsg &&
@@ -140,7 +142,7 @@ function Chat({
         });
 
         return groups;
-    }, [messages, username]);
+    }, [messages]);
 
     // Filter messages by search query
     const filteredMessages = useMemo(() => {
@@ -158,7 +160,7 @@ function Chat({
     const getUsernameFromId = (userIdStr: string) => {
         if (userIdStr === userId) return username;
         const user = onlineUsers.find((u) => u.id === userIdStr);
-        return user ? user.email : `User ${userIdStr}`;
+        return user ? user.email.split('@')[0] : `User ${userIdStr}`;
     };
 
     // Listen for Firestore real-time updates (simplified for now)
@@ -242,7 +244,7 @@ function Chat({
                                                 : 'text-slate-700 dark:text-slate-300'
                                                 }`}
                                         >
-                                            {u.email}
+                                            {u.email.split('@')[0]}
                                         </span>
                                     </div>
 
@@ -285,7 +287,7 @@ function Chat({
                                     : 'text-slate-500 dark:text-slate-400'
                                     }`}
                             >
-                                {recipient ? recipient.email : 'Select a user'}
+                                {recipient ? recipient.email.split('@')[0] : 'Select a user'}
                             </span>
                         </h3>
                         <div className="flex items-center gap-3">

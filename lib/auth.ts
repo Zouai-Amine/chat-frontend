@@ -16,6 +16,8 @@ export async function firebaseLogin(email: string, password: string) {
 }
 
 export async function firebaseSignup(email: string, password: string, username?: string) {
+    // For Firebase, we still need an email, but we'll use username as the primary identifier
+    // We'll create a dummy email if needed, but for now let's keep email requirement
     const userCredential = await createUserWithEmailAndPassword(auth, email, password);
 
     // Update the user's display name
