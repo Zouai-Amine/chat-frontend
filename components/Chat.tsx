@@ -13,6 +13,7 @@ import {
     Settings,
     Paperclip,
     Image,
+    LogOut,
 } from 'lucide-react';
 
 type FloatingReaction = {
@@ -24,21 +25,21 @@ type FloatingReaction = {
 };
 
 interface Message {
-    id?: number;
+    id?: string;
     sender: string;
     text: string;
     timestamp: Date;
-    reactions: { [user_id: number]: string };
+    reactions: { [user_id: string]: string };
 }
 
 interface ChatProps {
-    recipient: { id: number; username: string } | null;
-    setRecipient: (recipient: { id: number; username: string } | null) => void;
+    recipient: { id: string; email: string } | null;
+    setRecipient: (recipient: { id: string; email: string } | null) => void;
     message: string;
     setMessage: (message: string) => void;
     messages: Message[];
     setMessages: Dispatch<SetStateAction<Message[]>>;
-    onlineUsers: { id: number; username: string }[];
+    onlineUsers: { id: string; email: string }[];
     unread: Record<string, number>;
     searchQuery: string;
     setSearchQuery: (query: string) => void;
@@ -49,18 +50,19 @@ interface ChatProps {
     typingUsers: string[];
     isTyping: boolean;
     floatingReactions: FloatingReaction[];
-    showReactionPicker: number | null;
-    setShowReactionPicker: (id: number | null) => void;
+    showReactionPicker: string | null;
+    setShowReactionPicker: (id: string | null) => void;
     scrollRef: React.RefObject<HTMLDivElement | null>;
     sendMessage: () => void;
-    sendReaction: (messageId: number, reaction: string) => void;
+    sendReaction: (messageId: string, reaction: string) => void;
     handleTyping: () => void;
     username: string;
-    userId: number | null;
+    userId: string | null;
     socket: WebSocket | null;
     hasMoreMessages: boolean;
     loadMoreMessages: () => void;
     isLoadingMore: boolean;
+    onLogout: () => void;
 }
 
 function Chat({
@@ -91,16 +93,17 @@ function Chat({
     hasMoreMessages,
     loadMoreMessages,
     isLoadingMore,
+    onLogout,
 }: ChatProps) {
     // Group messages (same as your original logic)
     const groupedMessages = useMemo(() => {
         const groups: Array<{
             sender: string;
             messages: {
-                id?: number;
+                id?: string;
                 text: string;
                 timestamp: Date;
-                reactions: { [user_id: number]: string };
+                reactions: { [user_id: string]: string };
             }[];
             isOwn: boolean;
         }> = [];
@@ -118,7 +121,7 @@ function Chat({
                     sender: msg.sender,
                     messages: [
                         {
-                            id: msg.id,
+                            id: String(msg.id),
                             text: msg.text,
                             timestamp: msg.timestamp,
                             reactions: msg.reactions || {},
@@ -128,7 +131,7 @@ function Chat({
                 });
             } else {
                 groups[groups.length - 1].messages.push({
-                    id: msg.id,
+                    id: String(msg.id),
                     text: msg.text,
                     timestamp: msg.timestamp,
                     reactions: msg.reactions || {},
@@ -152,66 +155,20 @@ function Chat({
             .filter((group) => group.messages.length > 0);
     }, [groupedMessages, searchQuery]);
 
-    const getUsernameFromId = (userIdNum: number) => {
-        if (userIdNum === userId) return username;
-        const user = onlineUsers.find((u) => u.id === userIdNum);
-        return user ? user.username : `User ${userIdNum}`;
+    const getUsernameFromId = (userIdStr: string) => {
+        if (userIdStr === userId) return username;
+        const user = onlineUsers.find((u) => u.id === userIdStr);
+        return user ? user.email : `User ${userIdStr}`;
     };
 
-    // Listen for WebSocket “new_reaction” (and optionally “new_message”) events
+    // Listen for Firestore real-time updates (simplified for now)
     useEffect(() => {
-        if (!socket) return;
-
-        const handler = (event: MessageEvent) => {
-            let data: Record<string, unknown>;
-            try {
-                data = JSON.parse(event.data) as Record<string, unknown>;
-            } catch {
-                // Not JSON or irrelevant message
-                return;
-            }
-
-            if (data.type === 'new_reaction' && typeof data.message_id === 'number' && typeof data.user_id === 'number' && typeof data.reaction === 'string') {
-                const { message_id, user_id, reaction } = data;
-                setMessages((prev) =>
-                    prev.map((msg) => {
-                        if (msg.id === message_id) {
-                            return {
-                                ...msg,
-                                reactions: {
-                                    ...msg.reactions,
-                                    [user_id]: reaction,
-                                },
-                            };
-                        }
-                        return msg;
-                    })
-                );
-            }
-
-            // Optionally, if your server sends new messages:
-            if (data.type === 'new_message' && typeof data.id === 'number' && typeof data.sender === 'string' && typeof data.text === 'string' && typeof data.timestamp === 'string') {
-                const { id, sender, text, timestamp, reactions } = data;
-                const newMsg: Message = {
-                    id,
-                    sender,
-                    text,
-                    timestamp: new Date(timestamp),
-                    reactions: (reactions as Record<number, string>) || {},
-                };
-                setMessages((prev) => [...prev, newMsg]);
-            }
-        };
-
-        socket.addEventListener('message', handler);
-
-        return () => {
-            socket.removeEventListener('message', handler);
-        };
-    }, [socket, setMessages]);
+        // This would be implemented with Firestore listeners
+        // For now, we'll handle reactions through the sendReaction function
+    }, []);
 
     // Handler that wraps sendReaction and also does optimistic update
-    const handleReaction = (messageId: number, emoji: string) => {
+    const handleReaction = (messageId: string, emoji: string) => {
         // Optimistically update UI
         if (userId != null) {
             setMessages((prev) =>
@@ -275,7 +232,7 @@ function Chat({
                                     <div className="flex items-center gap-4">
                                         <div className="relative">
                                             <div className="w-8 h-8 bg-gradient-to-br from-cyan-400 to-blue-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-lg ring-2 ring-white/50 dark:ring-slate-700/50">
-                                                {u.username.charAt(0).toUpperCase()}
+                                                {u.email.charAt(0).toUpperCase()}
                                             </div>
                                             <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-gradient-to-r from-green-400 to-emerald-500 border-3 border-white dark:border-slate-800 rounded-full animate-pulse shadow-md"></div>
                                         </div>
@@ -285,11 +242,11 @@ function Chat({
                                                 : 'text-slate-700 dark:text-slate-300'
                                                 }`}
                                         >
-                                            {u.username}
+                                            {u.email}
                                         </span>
                                     </div>
 
-                                    {unread[u.username] && (
+                                    {unread[u.email] && (
                                         <motion.div
                                             initial={{ scale: 0, rotate: -180 }}
                                             animate={{ scale: 1, rotate: 0 }}
@@ -297,7 +254,7 @@ function Chat({
                                             className="relative flex items-center justify-center"
                                         >
                                             <div className="bg-gradient-to-r from-pink-500 to-rose-500 text-white text-sm font-bold rounded-full px-3 py-1 shadow-lg ring-2 ring-pink-400/50 animate-pulse">
-                                                {unread[u.username]}
+                                                {unread[u.email]}
                                             </div>
                                             <span className="absolute inset-0 rounded-full bg-pink-500 opacity-30 animate-ping"></span>
                                         </motion.div>
@@ -328,7 +285,7 @@ function Chat({
                                     : 'text-slate-500 dark:text-slate-400'
                                     }`}
                             >
-                                {recipient ? recipient.username : 'Select a user'}
+                                {recipient ? recipient.email : 'Select a user'}
                             </span>
                         </h3>
                         <div className="flex items-center gap-3">
@@ -353,11 +310,13 @@ function Chat({
                                 )}
                             </motion.button>
                             <motion.button
-                                whileHover={{ scale: 1.1, boxShadow: '0 0 20px rgba(168, 85, 247, 0.3)' }}
+                                whileHover={{ scale: 1.1, boxShadow: '0 0 20px rgba(239, 68, 68, 0.3)' }}
                                 whileTap={{ scale: 0.9 }}
-                                className="p-3 rounded-xl hover:bg-purple-100/50 dark:hover:bg-purple-900/30 transition-all duration-300 ring-1 ring-white/20 hover:ring-purple-400/50"
+                                onClick={onLogout}
+                                className="p-3 rounded-xl hover:bg-red-100/50 dark:hover:bg-red-900/30 transition-all duration-300 ring-1 ring-white/20 hover:ring-red-400/50"
+                                title="Logout"
                             >
-                                <Settings className="w-5 h-5 text-slate-600 dark:text-slate-400" />
+                                <LogOut className="w-5 h-5 text-slate-600 dark:text-slate-400" />
                             </motion.button>
                         </div>
                     </div>
@@ -489,7 +448,7 @@ function Chat({
                                                             whileTap={{ scale: 0.95 }}
                                                             onClick={() =>
                                                                 setShowReactionPicker(
-                                                                    showReactionPicker === msg.id ? null : msg.id!
+                                                                    showReactionPicker === msg.id ? null : String(msg.id)
                                                                 )
                                                             }
                                                             className="p-2 rounded-full bg-gradient-to-br from-cyan-100/80 to-blue-100/80 dark:from-cyan-900/40 dark:to-blue-900/40 hover:from-cyan-200/90 hover:to-blue-200/90 dark:hover:from-cyan-800/60 dark:hover:to-blue-800/60 transition-all duration-300 backdrop-blur-sm ring-1 ring-cyan-400/30 hover:ring-cyan-400/60 shadow-md hover:shadow-lg"
@@ -510,8 +469,7 @@ function Chat({
                                                 >
                                                     {Object.entries(msg.reactions).map(
                                                         ([userIdStr, reaction]) => {
-                                                            const userIdNum = parseInt(userIdStr);
-                                                            const reactorName = getUsernameFromId(userIdNum);
+                                                            const reactorName = getUsernameFromId(userIdStr);
                                                             return (
                                                                 <div
                                                                     key={userIdStr}
@@ -533,7 +491,7 @@ function Chat({
                     </AnimatePresence>
 
                     {/* Typing indicator */}
-                    {typingUsers.filter((u) => u === recipient?.username).length > 0 && (
+                    {typingUsers.filter((u) => u === recipient?.email).length > 0 && (
                         <motion.div
                             initial={{ opacity: 0, y: 20 }}
                             animate={{ opacity: 1, y: 0 }}
@@ -544,13 +502,13 @@ function Chat({
                                 <div className="flex items-center gap-2">
                                     <div className="w-6 h-6 bg-gradient-to-br from-cyan-400 via-blue-500 to-purple-500 rounded-full flex items-center justify-center text-white font-bold text-xs shadow-md ring-1 ring-white/50 dark:ring-slate-700/50">
                                         {typingUsers
-                                            .filter((u) => u === recipient?.username)[0]
+                                            .filter((u) => u === recipient?.email)[0]
                                             .charAt(0)
                                             .toUpperCase()}
                                     </div>
                                     <div className="flex flex-col">
                                         <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                                            {typingUsers.filter((u) => u === recipient?.username)[0]} is typing
+                                            {typingUsers.filter((u) => u === recipient?.email)[0]} is typing
                                         </span>
                                         <div className="flex space-x-1 mt-1">
                                             <div className="w-2 h-2 bg-gradient-to-r from-cyan-400 to-blue-500 rounded-full animate-bounce shadow-sm"></div>

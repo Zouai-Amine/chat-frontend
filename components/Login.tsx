@@ -4,12 +4,12 @@ import { motion } from "framer-motion";
 import { MessageCircle } from "lucide-react";
 
 interface LoginProps {
-    onLogin: (username: string, password: string) => void;
+    onLogin: (email: string, password: string) => void;
     onSignupClick: () => void;
 }
 
 export default function Login({ onLogin, onSignupClick }: LoginProps) {
-    const [username, setUsername] = useState("");
+    const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
 
     return (
@@ -25,10 +25,10 @@ export default function Login({ onLogin, onSignupClick }: LoginProps) {
             </h2>
 
             <input
-                type="text"
-                placeholder="Username"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
                 className="w-full px-6 py-4 bg-white/70 dark:bg-slate-700/70 border rounded-2xl mb-4 text-slate-900 dark:text-white"
             />
 
@@ -38,13 +38,13 @@ export default function Login({ onLogin, onSignupClick }: LoginProps) {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 className="w-full px-6 py-4 bg-white/70 dark:bg-slate-700/70 border rounded-2xl mb-6 text-slate-900 dark:text-white"
-                onKeyDown={(e) => e.key === "Enter" && onLogin(username, password)}
+                onKeyDown={(e) => e.key === "Enter" && onLogin(email, password)}
             />
 
             <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => onLogin(username, password)}
+                onClick={() => onLogin(email, password)}
                 className="w-full bg-gradient-to-r from-cyan-500 via-blue-500 to-pink-500 px-8 py-4 rounded-2xl font-bold text-white shadow-xl"
             >
                 Login

@@ -4,6 +4,11 @@ import { motion, AnimatePresence } from "framer-motion";
 import Login from "../components/Login";
 import Chat from "../components/Chat";
 import Signup from "@/components/Signup";
+import { firebaseLogin, firebaseSignup, firebaseLogout, onAuthStateChange } from "../lib/auth";
+import { LogOut } from "lucide-react";
+import { db } from "../lib/firebase";
+import { collection, addDoc, query, orderBy, onSnapshot, where, limit, getDocs } from "firebase/firestore";
+import { User } from "firebase/auth";
 
 // For floating reaction emojis
 type FloatingReaction = {
@@ -14,9 +19,10 @@ type FloatingReaction = {
   angle: number;
 };
 
-interface User {
-  id: number;
-  username: string;
+interface ChatUser {
+  id: string;
+  email: string;
+  displayName?: string;
 }
 
 interface Message {
@@ -28,30 +34,27 @@ interface Message {
 }
 
 function App() {
-  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
-  const [username, setUsername] = useState("");
-  const [userId, setUserId] = useState<number | null>(null);
-  const [recipient, setRecipient] = useState<{ id: number; username: string } | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [recipient, setRecipient] = useState<{ id: string; email: string } | null>(null);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<
     {
-      id?: number;
+      id?: string;
       sender: string;
       text: string;
       timestamp: Date;
-      reactions: { [user_id: number]: string };
+      reactions: { [user_id: string]: string };
     }[]
   >([]);
-  const [onlineUsers, setOnlineUsers] = useState<{ id: number; username: string }[]>([]);
+  const [onlineUsers, setOnlineUsers] = useState<{ id: string; email: string }[]>([]);
   const [unread, setUnread] = useState<Record<string, number>>({});
-  const [socket, setSocket] = useState<WebSocket | null>(null);
   const [isTyping, setIsTyping] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
   const [typingUsers, setTypingUsers] = useState<string[]>([]);
   const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
-  const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
+  const [showReactionPicker, setShowReactionPicker] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reactionIdRef = useRef(0);
@@ -60,7 +63,6 @@ function App() {
   const [isReacting, setIsReacting] = useState(false);
   const [isInitialLoad, setIsInitialLoad] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
-  const [loggedIn, setLoggedIn] = useState(false);
 
   // Load dark mode preference
   useEffect(() => {
@@ -105,219 +107,55 @@ function App() {
     return () => clearTimeout(timer);
   }, [floatingReactions]);
 
-  // --- Connect WebSocket ---
-  const connect = async () => {
-    if (!username.trim()) return alert("Please login first.");
-
-    try {
-      // First, get the user by username to get the ID
-      const userRes = await fetch(`${backendUrl}/users?username=${username}`, {
-        method: "GET",
-      });
-
-      if (!userRes.ok) {
-        // If user doesn't exist, create it
-        const createRes = await fetch(`${backendUrl}/users/`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username }),
-        });
-        if (!createRes.ok) throw new Error("Failed to create user");
-        const user = await createRes.json();
-        setUserId(user.id);
-        connectWebSocket(user.id);
-      } else {
-        const user = await userRes.json();
-        setUserId(user.id);
-        connectWebSocket(user.id);
-      }
-    } catch (err) {
-      console.error("Error connecting:", err);
-    }
-  };
-
-  const connectWebSocket = (userIdParam: number) => {
-    const wsUrl = backendUrl.replace(/^http/, 'ws');
-    const ws = new WebSocket(`${wsUrl}/ws/${userIdParam}`);
-
-    ws.onopen = () => {
-      console.log("WebSocket connected");
-    };
-
-    ws.onclose = () => {
-      console.log("WebSocket disconnected");
-      setSocket(null);
-      setTimeout(() => connectWebSocket(userIdParam), 2000);
-    };
-
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-
-      if (data.type === "users") {
-        setOnlineUsers(data.users.filter((u: User) => u.id !== userIdParam));
-      } else if (data.type === "message") {
-        const msg = {
-          id: data.id,
-          sender: data.sender,
-          text: data.text,
-          timestamp: new Date(data.timestamp || Date.now()),
-          reactions: data.reactions || {},
-        };
-        setMessages((prev) => [...prev, msg]);
-
-        if (data.sender !== username && data.sender !== recipient?.username) {
-          setUnread((prev) => ({
-            ...prev,
-            [data.sender]: (prev[data.sender] || 0) + 1,
-          }));
-        }
-      } else if (data.type === "typing") {
-        if (data.is_typing) {
-          setTypingUsers((prev) => [...new Set([...prev, data.sender])]);
-        } else {
-          setTypingUsers((prev) => prev.filter((u) => u !== data.sender));
-        }
-      } else if (data.type === "reaction") {
-        // Normalize reaction to string
-        let normalizedReaction = '';
-        if (Array.isArray(data.reaction)) {
-          normalizedReaction = data.reaction[0] || '';
-        } else if (typeof data.reaction === 'object' && data.reaction) {
-          normalizedReaction = data.reaction.reaction || '';
-        } else if (typeof data.reaction === 'string') {
-          normalizedReaction = data.reaction;
-        }
-
-        // Prevent auto-scroll during reaction update
-        setIsReacting(true);
-
-        // Only trigger floating animation if reaction is being added (not removed)
-        if (normalizedReaction) {
-          const msgElement = document.querySelector(`[data-message-id="${data.message_id}"]`);
-          if (msgElement) {
-            const rect = msgElement.getBoundingClientRect();
-            const chatArea = document.querySelector('.flex-1.overflow-y-auto') as HTMLElement;
-            if (chatArea) {
-              const centerX = rect.left + rect.width / 2 - chatArea.getBoundingClientRect().left;
-              const centerY = rect.top + rect.height / 2 - chatArea.getBoundingClientRect().top;
-              const newReactions: FloatingReaction[] = [];
-              for (let i = 0; i < 3; i++) {
-                const angle = Math.random() * 360;
-                newReactions.push({
-                  id: reactionIdRef.current++,
-                  emoji: normalizedReaction,
-                  x: centerX,
-                  y: centerY,
-                  angle
-                });
-              }
-              setFloatingReactions((prev) => [...prev, ...newReactions]);
-            }
-          }
-        }
-
-        // Update message reactions
-        setMessages((prev) =>
-          prev.map((msg) => {
-            if (msg.id === data.message_id) {
-              const newReactions = { ...msg.reactions };
-              if (normalizedReaction) {
-                newReactions[data.user_id] = normalizedReaction;
-              } else {
-                delete newReactions[data.user_id];
-              }
-              return {
-                ...msg,
-                reactions: newReactions,
-              };
-            }
-            return msg;
-          })
-        );
-
-        setTimeout(() => setIsReacting(false), 0);
-      }
-    };
-
-    setSocket(ws);
-  };
-
-  // Connect to websocket when logged in
+  // Initialize Firebase auth listener
   useEffect(() => {
-    if (loggedIn && username) {
-      connect();
-    }
-  }, [loggedIn, username]);
+    const unsubscribe = onAuthStateChange((user) => {
+      setCurrentUser(user);
+    });
+    return unsubscribe;
+  }, []);
 
   const handleSignup = async (email: string, username: string, password: string) => {
     try {
-      const response = await fetch(`${backendUrl}/signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, username, password }),
-      });
-
-      if (!response.ok) throw new Error("Signup failed");
-
-      alert("Signup successful! Please log in.");
+      await firebaseSignup(email, password, username);
       setShowSignup(false);
     } catch (err) {
-      alert("Signup failed!");
+      console.error("Signup error:", err);
     }
   };
 
-  const handleLogin = async (username: string, password: string) => {
+  const handleLogin = async (email: string, password: string) => {
     try {
-      const response = await fetch(`${backendUrl}/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username, password }),
-      });
-
-      if (!response.ok) throw new Error("Invalid credentials");
-
-      const data = await response.json();
-      localStorage.setItem("token", data.access_token);
-      setUsername(username);
-      setLoggedIn(true);
-      alert("Login successful!");
+      await firebaseLogin(email, password);
     } catch (err) {
-      alert("Login failed!");
+      console.error("Login failed!");
     }
   };
 
-  // Handle typing
+  const handleLogout = async () => {
+    try {
+      await firebaseLogout();
+      alert("Logged out successfully!");
+    } catch (err) {
+      console.error("Logout error:", err);
+      alert("Logout failed!");
+    }
+  };
+
+  // Handle typing (simplified for Firebase)
   const handleTyping = useCallback(() => {
-    if (!socket || !recipient || !userId) return;
+    if (!recipient || !currentUser) return;
 
     if (!isTyping) {
       setIsTyping(true);
-      socket.send(
-        JSON.stringify({
-          type: "typing",
-          sender_id: userId,
-          recipient_id: recipient.id,
-          is_typing: true,
-        })
-      );
     }
 
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
 
     typingTimeoutRef.current = setTimeout(() => {
       setIsTyping(false);
-      if (socket && recipient && userId) {
-        socket.send(
-          JSON.stringify({
-            type: "typing",
-            sender_id: userId,
-            recipient_id: recipient.id,
-            is_typing: false,
-          })
-        );
-      }
     }, 1000);
-  }, [socket, recipient, userId, isTyping]);
+  }, [recipient, currentUser, isTyping]);
 
   useEffect(() => {
     return () => {
@@ -325,39 +163,22 @@ function App() {
     };
   }, []);
 
-  // Load more messages for infinite scroll
+  // Load more messages for infinite scroll (simplified for Firebase)
   const loadMoreMessages = useCallback(async () => {
     console.log("Loading more messages...");
-    if (!recipient || !userId || isLoadingMore || !hasMoreMessages) return;
+    if (!recipient || !currentUser || isLoadingMore || !hasMoreMessages) return;
 
     setIsLoadingMore(true);
-    const scrollableDiv = document.getElementById('scrollableDiv') as HTMLElement | null;
-    if (!scrollableDiv) return;
-
-    const oldScrollHeight = scrollableDiv.scrollHeight;
-    const oldScrollTop = scrollableDiv.scrollTop;
-
-    const olderMessages = await fetchMessages(userId, recipient.id, 20, messages.length);
-    if (olderMessages.length < 20) {
-      setHasMoreMessages(false);
-    }
-    setMessages(prev => [...olderMessages, ...prev]);
-
-    requestAnimationFrame(() => {
-      const newScrollHeight = scrollableDiv.scrollHeight;
-      const heightDiff = newScrollHeight - oldScrollHeight;
-      scrollableDiv.scrollTop = oldScrollTop + heightDiff;
-    });
-
+    // For Firebase, we'll implement pagination later
     setIsLoadingMore(false);
-  }, [recipient, userId, isLoadingMore, hasMoreMessages, messages.length]);
+  }, [recipient, currentUser, isLoadingMore, hasMoreMessages]);
 
-  // Send message
+  // Send message using Firestore
   const sendMessage = useCallback(async () => {
-    if (!socket || !recipient || !message.trim() || !userId) return;
+    if (!currentUser || !recipient || !message.trim()) return;
 
     const newMessage = {
-      sender: username,
+      sender: currentUser.email!,
       text: message,
       timestamp: new Date(),
       reactions: {},
@@ -365,87 +186,73 @@ function App() {
     setMessages((prev) => [...prev, newMessage]);
     setMessage("");
 
-    socket.send(
-      JSON.stringify({
-        type: "message",
-        sender_id: userId,
-        recipient_id: recipient.id,
-        text: message,
-      })
-    );
-  }, [socket, recipient, message, userId, username]);
-
-  // Fetch messages
-  const fetchMessages = async (senderId: number, recipientId: number, limit?: number, offset?: number) => {
     try {
-      let url = `${backendUrl}/messages/${senderId}/${recipientId}`;
-      if (limit !== undefined && offset !== undefined) {
-        url += `?limit=${limit}&offset=${offset}`;
-      }
-      const res = await fetch(url);
-      if (res.ok) {
-        const data = await res.json();
-        const formatted = data.map((msg: Message) => {
-          const normalizedReactions: { [key: number]: string } = {};
-          if (msg.reactions && typeof msg.reactions === 'object') {
-            Object.entries(msg.reactions).forEach(([userId, reaction]) => {
-              let normalizedReaction = '';
-              if (typeof reaction === 'string') {
-                normalizedReaction = reaction;
-              } else if (typeof reaction === 'object' && reaction !== null && 'reaction' in reaction) {
-                const reactionObj = reaction as { reaction?: string };
-                if (typeof reactionObj.reaction === 'string') {
-                  normalizedReaction = reactionObj.reaction;
-                }
-              }
-              if (normalizedReaction) {
-                normalizedReactions[parseInt(userId)] = normalizedReaction;
-              }
-            });
-          }
+      await addDoc(collection(db, 'messages'), {
+        senderId: currentUser.uid,
+        recipientId: recipient.id,
+        text: message,
+        timestamp: new Date(),
+        reactions: {},
+      });
+    } catch (error) {
+      console.error('Error sending message:', error);
+    }
+  }, [currentUser, recipient, message]);
 
-          return {
-            id: msg.id,
-            sender: msg.sender,
-            text: msg.text,
-            timestamp: new Date(msg.timestamp),
-            reactions: normalizedReactions,
-          };
+  // Fetch messages from Firestore
+  const fetchMessages = async (senderId: string, recipientId: string, limit?: number) => {
+    try {
+      const q = query(
+        collection(db, 'messages'),
+        where('senderId', 'in', [senderId, recipientId]),
+        where('recipientId', 'in', [senderId, recipientId]),
+        orderBy('timestamp', 'desc')
+      );
+      const querySnapshot = await getDocs(q);
+      const messages: any[] = [];
+      querySnapshot.forEach((doc) => {
+        const data = doc.data();
+        messages.push({
+          id: doc.id,
+          sender: data.senderId === senderId ? currentUser?.email : data.recipientId === senderId ? data.senderId : 'Unknown',
+          text: data.text,
+          timestamp: data.timestamp.toDate(),
+          reactions: data.reactions || {},
         });
-        return formatted;
-      }
+      });
+      return messages.reverse();
     } catch (err) {
       console.error("Error fetching messages:", err);
+      return [];
     }
-    return [];
   };
 
   useEffect(() => {
-    if (recipient && userId) {
+    if (recipient && currentUser) {
       setUnread((prev) => {
         const updated = { ...prev };
-        delete updated[recipient.username];
+        delete updated[recipient.email];
         return updated;
       });
       const loadInitial = async () => {
         setIsInitialLoad(true);
-        const initialMessages = await fetchMessages(userId, recipient.id, 20, 0);
-        setMessages(initialMessages.reverse());
+        const initialMessages = await fetchMessages(currentUser.uid, recipient.id, 20);
+        setMessages(initialMessages);
         setHasMoreMessages(initialMessages.length === 20);
         setTimeout(() => setIsInitialLoad(false), 0);
       };
       loadInitial();
     }
-  }, [recipient, userId]);
+  }, [recipient, currentUser]);
 
   // Send reaction + trigger local floating effect
-  const sendReaction = useCallback((messageId: number, reaction: string) => {
-    if (!socket || !userId) return;
+  const sendReaction = useCallback((messageId: string, reaction: string) => {
+    if (!currentUser) return;
 
     const msg = messages.find(m => m.id === messageId);
     if (!msg) return;
 
-    const currentReaction = msg.reactions[userId];
+    const currentReaction = msg.reactions[currentUser.uid];
     const newReaction = currentReaction === reaction ? '' : reaction;
 
     setIsReacting(true);
@@ -454,9 +261,9 @@ function App() {
       if (m.id === messageId) {
         const updatedReactions = { ...m.reactions };
         if (newReaction) {
-          updatedReactions[userId] = newReaction;
+          updatedReactions[currentUser.uid] = newReaction;
         } else {
-          delete updatedReactions[userId];
+          delete updatedReactions[currentUser.uid];
         }
         return { ...m, reactions: updatedReactions };
       }
@@ -489,15 +296,9 @@ function App() {
       }
     }
 
-    socket.send(
-      JSON.stringify({
-        type: "reaction",
-        message_id: messageId,
-        user_id: userId,
-        reaction: newReaction,
-      })
-    );
-  }, [socket, userId, messages]);
+    // Update reaction in Firestore
+    // Note: This would need to be implemented with Firestore update operations
+  }, [currentUser, messages]);
 
   return (
     <div className="flex flex-col md:flex-row h-screen text-slate-900 dark:text-white transition-all duration-500
@@ -553,7 +354,7 @@ function App() {
       </div>
 
       <AnimatePresence>
-        {!loggedIn ? (
+        {!currentUser ? (
           showSignup ? (
             <Signup
               onSignup={handleSignup}
@@ -590,12 +391,13 @@ function App() {
             sendMessage={sendMessage}
             sendReaction={sendReaction}
             handleTyping={handleTyping}
-            username={username}
-            userId={userId}
-            socket={socket}
+            username={currentUser.email!}
+            userId={currentUser.uid}
+            socket={null}
             hasMoreMessages={hasMoreMessages}
             loadMoreMessages={loadMoreMessages}
             isLoadingMore={isLoadingMore}
+            onLogout={handleLogout}
           />
         )}
       </AnimatePresence>
