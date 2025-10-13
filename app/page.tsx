@@ -28,6 +28,7 @@ interface Message {
 }
 
 function App() {
+  const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
   const [username, setUsername] = useState("");
   const [userId, setUserId] = useState<number | null>(null);
   const [recipient, setRecipient] = useState<{ id: number; username: string } | null>(null);
@@ -110,13 +111,13 @@ function App() {
 
     try {
       // First, get the user by username to get the ID
-      const userRes = await fetch(`http://localhost:8000/users?username=${username}`, {
+      const userRes = await fetch(`${backendUrl}/users?username=${username}`, {
         method: "GET",
       });
 
       if (!userRes.ok) {
         // If user doesn't exist, create it
-        const createRes = await fetch("http://localhost:8000/users/", {
+        const createRes = await fetch(`${backendUrl}/users/`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ username }),
@@ -136,7 +137,8 @@ function App() {
   };
 
   const connectWebSocket = (userIdParam: number) => {
-    const ws = new WebSocket(`ws://localhost:8000/ws/${userIdParam}`);
+    const wsUrl = backendUrl.replace(/^http/, 'ws');
+    const ws = new WebSocket(`${wsUrl}/ws/${userIdParam}`);
 
     ws.onopen = () => {
       console.log("WebSocket connected");
@@ -249,7 +251,7 @@ function App() {
 
   const handleSignup = async (email: string, username: string, password: string) => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/signup", {
+      const response = await fetch(`${backendUrl}/signup`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email, username, password }),
@@ -266,7 +268,7 @@ function App() {
 
   const handleLogin = async (username: string, password: string) => {
     try {
-      const response = await fetch("http://127.0.0.1:8000/login", {
+      const response = await fetch(`${backendUrl}/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username, password }),
@@ -376,7 +378,7 @@ function App() {
   // Fetch messages
   const fetchMessages = async (senderId: number, recipientId: number, limit?: number, offset?: number) => {
     try {
-      let url = `http://localhost:8000/messages/${senderId}/${recipientId}`;
+      let url = `${backendUrl}/messages/${senderId}/${recipientId}`;
       if (limit !== undefined && offset !== undefined) {
         url += `?limit=${limit}&offset=${offset}`;
       }
