@@ -4,6 +4,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 import { WebSocketMessage, User } from '../types';
 import Sidebar from './chat/Sidebar';
 import ChatArea from './chat/ChatArea';
+import { useToast } from '../context/ToastContext';
+import ConnectionStatus from './ui/ConnectionStatus';
 
 interface ChatLayoutProps {
   username: string;
@@ -13,6 +15,12 @@ interface ChatLayoutProps {
 
 const ChatLayout = ({ username, userId, onLogout }: ChatLayoutProps) => {
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
+  const { showError } = useToast();
+  
+  // WebSocket Error Handler
+  const handleWebSocketError = useCallback((error: string) => {
+    showError(error);
+  }, [showError]);
   
   const {
     messages,
@@ -32,7 +40,8 @@ const ChatLayout = ({ username, userId, onLogout }: ChatLayoutProps) => {
     loadMoreMessages,
     addMessage,
     updateMessageReaction,
-    addFloatingReaction
+    addFloatingReaction,
+    error
   } = useChat({ backendUrl, userId, username });
 
   const [messageInput, setMessageInput] = useState("");
@@ -41,6 +50,13 @@ const ChatLayout = ({ username, userId, onLogout }: ChatLayoutProps) => {
   const [darkMode, setDarkMode] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [showReactionPicker, setShowReactionPicker] = useState<number | null>(null);
+
+  // Show error toast
+  useEffect(() => {
+    if (error) {
+      showError(error);
+    }
+  }, [error, showError]);
 
   // WebSocket Handler
   const handleWebSocketMessage = useCallback((data: WebSocketMessage) => {
@@ -83,10 +99,11 @@ const ChatLayout = ({ username, userId, onLogout }: ChatLayoutProps) => {
     }
   }, [userId, username, recipient, addMessage, setOnlineUsers, setUnread, setTypingUsers, updateMessageReaction]);
 
-  const { socket, sendMessage: sendWsMessage } = useWebSocket({
+  const { socket, sendMessage: sendWsMessage, isConnected, isConnecting } = useWebSocket({
     url: backendUrl,
     userId,
-    onMessage: handleWebSocketMessage
+    onMessage: handleWebSocketMessage,
+    onError: handleWebSocketError
   });
 
   // Helper to trigger floating reaction from message element
@@ -193,6 +210,8 @@ const ChatLayout = ({ username, userId, onLogout }: ChatLayoutProps) => {
 
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground transition-colors duration-300">
+      {/* Connection Status Indicator */}
+      <ConnectionStatus isConnected={isConnected} isConnecting={isConnecting} />
       <Sidebar
         onlineUsers={onlineUsers}
         recipient={recipient}

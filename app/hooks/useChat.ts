@@ -16,6 +16,7 @@ export function useChat({ backendUrl, userId, username }: UseChatProps) {
     const [floatingReactions, setFloatingReactions] = useState<FloatingReaction[]>([]);
     const [hasMoreMessages, setHasMoreMessages] = useState(true);
     const [isLoadingMore, setIsLoadingMore] = useState(false);
+    const [error, setError] = useState<string | null>(null);
     const reactionIdRef = useRef(0);
 
     const fetchMessages = async (senderId: number, recipientId: number, limit?: number, offset?: number) => {
@@ -40,15 +41,24 @@ export function useChat({ backendUrl, userId, username }: UseChatProps) {
                     timestamp: new Date(msg.timestamp),
                     reactions: msg.reactions || {},
                 }));
+            } else {
+                const errorText = res.status === 404
+                    ? "Conversation not found"
+                    : res.status === 401
+                        ? "Session expired. Please log in again."
+                        : "Failed to load messages. Please try again.";
+                setError(errorText);
             }
         } catch (err) {
             console.error("Error fetching messages:", err);
+            setError("Unable to connect to server. Please check your internet connection.");
         }
         return [];
     };
 
     const loadInitialMessages = useCallback(async () => {
         if (!recipient || !userId) return;
+        setError(null);
         const initialMessages = await fetchMessages(userId, recipient.id, 20, 0);
         setMessages(initialMessages.reverse());
         setHasMoreMessages(initialMessages.length === 20);
@@ -136,6 +146,7 @@ export function useChat({ backendUrl, userId, username }: UseChatProps) {
         loadMoreMessages,
         addMessage,
         updateMessageReaction,
-        addFloatingReaction
+        addFloatingReaction,
+        error
     };
 }

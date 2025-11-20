@@ -4,14 +4,17 @@ import { AnimatePresence } from "framer-motion";
 import Login from "../components/Login";
 import Signup from "@/components/Signup";
 import ChatLayout from "./components/ChatLayout";
+import { ToastProvider, useToast } from "./context/ToastContext";
+import ErrorBoundary from "./components/ui/ErrorBoundary";
 
-export default function App() {
+function ChatApp() {
   const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8000';
   const [username, setUsername] = useState("");
   const [userId, setUserId] = useState<number | null>(null);
   const [loggedIn, setLoggedIn] = useState(false);
   const [showSignup, setShowSignup] = useState(false);
   const [darkMode, setDarkMode] = useState(false);
+  const { showSuccess, showError, showInfo } = useToast();
 
   // Load dark mode preference
   useEffect(() => {
@@ -36,6 +39,11 @@ export default function App() {
   }, [darkMode]);
 
   const handleSignup = async (email: string, username: string, password: string) => {
+    if (!email || !username || !password) {
+      showError("Please fill in all fields");
+      return;
+    }
+    
     try {
       const response = await fetch(`${backendUrl}/signup`, {
         method: "POST",
@@ -43,16 +51,24 @@ export default function App() {
         body: JSON.stringify({ email, username, password }),
       });
 
-      if (!response.ok) throw new Error("Signup failed");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Signup failed");
+      }
 
-      alert("Signup successful! Please log in.");
+      showSuccess("Account created successfully! Please log in.");
       setShowSignup(false);
-    } catch (err) {
-      alert("Signup failed!");
+    } catch (err: any) {
+      showError(err.message || "Signup failed. Please try again.");
     }
   };
 
   const handleLogin = async (username: string, password: string) => {
+    if (!username || !password) {
+      showError("Please enter both username and password");
+      return;
+    }
+
     try {
       const response = await fetch(`${backendUrl}/login`, {
         method: "POST",
@@ -60,7 +76,10 @@ export default function App() {
         body: JSON.stringify({ username, password }),
       });
 
-      if (!response.ok) throw new Error("Invalid credentials");
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || "Invalid credentials");
+      }
 
       const data = await response.json();
       localStorage.setItem("token", data.access_token);
@@ -72,12 +91,13 @@ export default function App() {
         setUserId(user.id);
         setUsername(username);
         setLoggedIn(true);
+        showSuccess(`Welcome back, ${username}!`);
       } else {
-         alert("Login successful but failed to fetch user details.");
+         showError("Login successful but failed to fetch user details.");
       }
 
-    } catch (err) {
-      alert("Login failed!");
+    } catch (err: any) {
+      showError(err.message || "Invalid username or password. Please try again.");
     }
   };
 
@@ -86,6 +106,7 @@ export default function App() {
     setUserId(null);
     setUsername("");
     localStorage.removeItem("token");
+    showInfo("You have been logged out successfully");
   };
 
   return (
@@ -123,5 +144,15 @@ export default function App() {
         )}
       </AnimatePresence>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <ToastProvider>
+        <ChatApp />
+      </ToastProvider>
+    </ErrorBoundary>
   );
 }
